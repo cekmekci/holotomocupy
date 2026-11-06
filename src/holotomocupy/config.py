@@ -606,3 +606,110 @@ def parse_args_coded(config_file):
     args.energy     = cfg.float("energy", fallback=None)
 
     return args
+
+
+def parse_args_coded_step0(config_file):
+    """Config for the coded-aperture NFP calibration (step0.py of that pipeline).
+
+    `parse_args_step0_nx`'s sibling, but the input is a PREPROCESSED HDF5 --
+    `data_nfp.h5` with `/exchange/{pdata,pref,shifts}`, written by the step0a
+    and step0b notebooks -- rather than a raw NXtomo.  The output is the coded
+    aperture and the probe as `.npy`, which the holotomography stage reads.
+    """
+    cfg = _load(config_file)
+    args = SimpleNamespace()
+
+    args.path     = cfg.path("path")
+    args.path_out = cfg.path("path_out", fallback=cfg.path("path"))
+    args.in_file  = os.path.join(args.path, cfg.str("in_file"))
+    # Where the recovered aperture and probe go. Relative names resolve
+    # against path_out; the holotomography configs point `code_file` here.
+    _rel = lambda p: p if os.path.isabs(p) else os.path.join(args.path_out, p)
+    args.code_out = _rel(cfg.str("code_out", fallback="code.npy"))
+    args.prb_out  = _rel(cfg.str("prb_out",  fallback="prb.npy"))
+
+    # Raw NFP scan root, read by the step0a notebook rather than by step0.py.
+    args.raw_nfp = cfg.opt_str("raw_nfp")
+
+    args.n      = cfg.int("n")
+    # The aperture plane. Bigger than the detector because the mask is
+    # scanned: npsi must clear n + 2*max|shift| + a margin, and the FOV
+    # filter in step0.py drops any position that would reach past it.
+    args.npsi   = cfg.int("npsi")
+    args.nchunk = cfg.int("nchunk")
+    # Positions whose patch would leave the aperture plane are dropped; this
+    # is the slack, in detector px, held back from the edge.
+    args.fov_margin = cfg.int("fov_margin", fallback=16)
+
+    args.niter           = cfg.int("niter")
+    args.start_iter      = cfg.int("start_iter",      fallback=0)
+    args.checkpoint_step = cfg.int("checkpoint_step", fallback=-1)
+    args.error_step      = cfg.int("error_step")
+
+    # [proj, prb, pos] -- `proj` is the aperture (as its complex log; see
+    # step0.py), so this is RecNFP's own three-entry rho, not the coded
+    # five-entry one of parse_args_coded.
+    args.rho = cfg.list("rho", float)
+    args.estimate_rho       = cfg.bool("estimate_rho",       fallback=False)
+    args.rho_estimate_niter = cfg.int ("rho_estimate_niter", fallback=16)
+    args.rho_trial_error_step = cfg.int("rho_trial_error_step", fallback=-1)
+
+    args.psf_sigma = cfg.float("psf_sigma", fallback=0.0)
+    args.model     = _parse_model(cfg)
+    # delta/beta for the Paganin seed of the aperture.
+    args.paganin   = cfg.float("paganin", fallback=24.05)
+
+    args.shift_type = cfg.str("shift_type", fallback="fft")
+    args.log_level  = cfg.str("log_level",  fallback="INFO")
+
+    return args
+
+
+def parse_args_coded_steps15(config_file):
+    """Config for stages 1-5 of the coded-aperture pipeline.
+
+    The holotomography scan, as opposed to `parse_args_coded_step0`'s
+    aperture-calibration scan.  Two scans, two files, as the multi-distance
+    folders split `config_step0.conf` from `config_steps15.conf`.
+
+    Stages 1-5 are notebooks here, not a `steps15.py`, so this is read for its
+    paths and for the handful of numbers that change per dataset.  The
+    structural constants -- dark/flat counts, GPU counts, chunk sizes -- stay
+    in the notebooks.
+    """
+    cfg = _load(config_file)
+    args = SimpleNamespace()
+
+    args.path     = cfg.path("path")
+    args.in_file  = os.path.join(args.path, cfg.str("in_file"))
+    _rel = lambda p: p if os.path.isabs(p) else os.path.join(args.path, p)
+
+    # Raw holotomography scan, and the ESRF drift table. Read-only.
+    args.raw_ht          = cfg.opt_str("raw_ht")
+    args.pfile           = cfg.opt_str("pfile")
+    args.correction_file = cfg.opt_str("correction_file")
+
+    # Stage 0's products, which stages 3 and 5 consume.
+    args.nfp_file     = _rel(cfg.str("nfp_file", fallback="data_nfp.h5"))
+    args.code_file    = _rel(cfg.str("code_file", fallback="code.npy"))
+    args.prb_file     = _rel(cfg.str("prb_file",  fallback="prb.npy"))
+    # Stage 5's product, which step 6 consumes.
+    args.obj_init_file = _rel(cfg.str("obj_init_file", fallback="obj_init.npy"))
+
+    args.ntheta = cfg.int("ntheta")
+    args.n      = cfg.int("n")
+
+    # Source-to-code distance. Stages 3 and 5 read the NOMINAL value out of
+    # data_nfp.h5 by default; set this to override with the tuned one that
+    # step 6 uses, so the two stages model the same geometry.
+    args.z1_code = cfg.float("z1_code", fallback=None)
+
+    # Rotation axis offset added to shifts_cor in stage 5, (row, col) px.
+    args.rot_axis_offset = cfg.list("rot_axis_offset", float,
+                                    fallback="0.0,0.0")
+    # delta/beta for the per-projection Paganin inversion in stage 5.
+    args.paganin    = cfg.float("paganin", fallback=24.05)
+    args.fbp_filter = cfg.str("fbp_filter", fallback="shepp")
+
+    args.log_level = cfg.str("log_level", fallback="INFO")
+    return args

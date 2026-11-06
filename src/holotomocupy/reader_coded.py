@@ -260,35 +260,91 @@ class CodedReader:
 
     def read_checkpoint(self, path, out_obj=None, out_prb=None, out_pos=None,
                         out_code=None, out_pos_code=None):
-        """Load a CodedWriter checkpoint back into the solver's buffers."""
+        """Read a CodedWriter checkpoint, upsampling a coarser one to this grid.
+
+        This is what makes the bin2 -> bin1 -> bin0 ladder work: the rungs
+        share one `path_out` and hand off through `start_iter`, so every level
+        but the first reads a checkpoint written at half its width.  `Reader`
+        does the same for the multi-distance pipeline; the extra work here is
+        that the aperture and its positions scale too.
+
+        Scale is inferred, never configured: `scale = self.n / checkpoint n`
+        for the detector-plane arrays, and the object's own z and x/y scales
+        are taken from the object dataset so they stay right under
+        tomo_upsample.  Repetition, not interpolation -- the solver smooths it
+        out in the first few iterations and a nearest-neighbour upsample
+        cannot invent detail that the coarse rung did not have.
+
+        Positions are PIXEL coordinates, so both sets are multiplied by the
+        scale; the aperture is a plane like the object and is repeated.
+        """
         with h5py.File(path, 'r', driver='mpio', comm=self.comm) as f:
-            if out_obj is not None:
-                local = self.end_obj - self.st_obj
-                batch = max(1, (1 << 28) // max(self.nobj ** 2 * 4, 1))
-                for i0 in range(0, local, batch):
-                    i1 = min(i0 + batch, local)
-                    sl = slice(self.st_obj + i0, self.st_obj + i1)
-                    out_obj[i0:i1].real = np.asarray(f['obj_re'][sl])
-                    out_obj[i0:i1].imag = np.asarray(f['obj_im'][sl])
-            if out_pos is not None:
-                # Stored in Writer's [ntheta, ndist, 2] layout with ndist = 1,
-                # so the singleton distance axis is dropped on the way back.
-                out_pos[:] = np.asarray(
-                    f['pos'][self.st_theta:self.end_theta, 0], dtype='float32')
-            if out_pos_code is not None:
-                out_pos_code[:] = np.asarray(
-                    f['pos_code'][self.st_theta:self.end_theta], dtype='float32')
+            scale = self.n // f['prb_abs'].shape[-1]
+
             if out_prb is not None:
                 prb = (np.asarray(f['prb_abs'][0])
                        * np.exp(1j * np.asarray(f['prb_phase'][0]))
                        ).astype('complex64')
+                for axis in (1, 0):
+                    prb = np.repeat(prb, scale, axis=axis)
                 out_prb[:] = prb
+                del prb
+
+            if out_pos is not None:
+                # Writer stores [ntheta, ndist, 2] with ndist = 1.
+                out_pos[:] = np.asarray(
+                    f['pos'][self.st_theta:self.end_theta, 0],
+                    dtype='float32') * scale
+            if out_pos_code is not None:
+                out_pos_code[:] = np.asarray(
+                    f['pos_code'][self.st_theta:self.end_theta],
+                    dtype='float32') * scale
+
+            if out_obj is not None:
+                ds_re, ds_im = f['obj_re'], f['obj_im']
+                nzobj0, nobj0 = ds_re.shape[0], ds_re.shape[1]
+                scale_z  = max(1, self.nzobj // nzobj0)
+                scale_xy = max(1, self.nobj // nobj0)
+                st_src  = self.st_obj // scale_z
+                end_src = self.end_obj // scale_z
+                n0      = self.end_obj - self.st_obj
+                nz_src  = max(1, end_src - st_src)
+                if self.rank == 0 and scale_xy > 1:
+                    logger.warning(
+                        f'checkpoint {os.path.basename(path)}: obj '
+                        f'[{nzobj0}, {nobj0}, {nobj0}] -> [{self.nzobj}, '
+                        f'{self.nobj}, {self.nobj}] (z x{scale_z}, '
+                        f'x/y x{scale_xy}); prb/pos x{scale}')
+
+                z_batch = max(1, (1 << 28) // max(nobj0 * nobj0 * 8, 1))
+                for i0 in range(0, n0, z_batch):
+                    i1 = min(i0 + z_batch, n0)
+                    src_i0 = int(i0 * nz_src / n0)
+                    src_i1 = min(int((i1 - 1) * nz_src / n0) + 1, nz_src)
+                    blk = np.zeros((src_i1 - src_i0, nobj0, nobj0),
+                                   dtype='complex64')
+                    blk.real[:] = ds_re[st_src + src_i0:st_src + src_i1]
+                    blk.imag[:] = ds_im[st_src + src_i0:st_src + src_i1]
+                    if scale_xy > 1:
+                        for axis in (2, 1):
+                            blk = np.repeat(blk, scale_xy, axis=axis)
+                    idx = np.clip((np.arange(i0, i1) * nz_src / n0).astype(np.intp),
+                                  0, nz_src - 1) - src_i0
+                    out_obj[i0:i1] = blk[idx]
+                    del blk
+
             if out_code is not None:
                 code = (np.asarray(f['code_re'])
                         + 1j * np.asarray(f['code_im'])).astype('complex64')
+                scale_c = max(1, self.ncode // code.shape[-1])
+                if scale_c > 1:
+                    for axis in (1, 0):
+                        code = np.repeat(code, scale_c, axis=axis)
                 out_code[:] = cp.asarray(code)
+                del code
+
         if self.rank == 0:
-            logger.info(f'resumed from {path}')
+            logger.info(f'resumed from {path} (x{scale})')
 
 
 class CodedWriter(Writer):

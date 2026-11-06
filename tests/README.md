@@ -9,6 +9,7 @@ the MPI ones need `mpirun -np N`.
 |---|---|---|---|
 | **`unit`** | **start here** — imports, GPU, MPI, parallel HDF5, every operator's adjoint, gradients and Hessians of both shift operators and the cascade by Taylor test | GPU, MPI | ~1 min |
 | `adjoint` | dot-product (adjoint) test for `dF1*` in `grad(F0 o F1)` | GPU | s |
+| `coded` | the coded-aperture engine: the windowed code shift, the 6-level cascade, the batched kernels and the BH loop, and the coded I/O | GPU, MPI | ~2 min |
 | `data_mask` | the out-of-grid detector mask, `Rec._build_data_mask` | GPU, MPI 1 | s |
 | `disp_study` | dose/displacement study: how `ndist`, amplitude and probe size trade off | GPU | long |
 | `find_shifts_extra` | entropy autofocus for the per-angle drift — the engine behind `step7.py` | GPU | ~25 s |

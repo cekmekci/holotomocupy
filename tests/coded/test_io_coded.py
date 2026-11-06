@@ -243,14 +243,25 @@ def test_driver_round_trip():
         check('driver: inputs loaded', True)
 
         cl.BH(writer)
-        # niter=3, checkpoint_step=2 -> checkpoints at i = 0 and i = 2, the
-        # second holding the final state. find_latest_checkpoint only looks
-        # when start_iter > 0 (his convention: resuming is explicit), so the
-        # resume iteration is named here rather than discovered.
+        # niter=3, checkpoint_step=2 -> periodic checkpoints at i = 0 and
+        # i = 2 (range(0,3) never reaches i=3, so no choice of
+        # checkpoint_step can land one there), PLUS the unconditional
+        # end-of-run checkpoint _iterate always writes at i = niter = 3 --
+        # that one is what the next rung's start_iter=niter actually resumes
+        # from; without it that handoff silently falls back to a cold start.
+        # find_latest_checkpoint only looks when start_iter > 0 (his
+        # convention: resuming is explicit), so the resume iteration is
+        # named here rather than discovered.
         written = sorted(os.listdir(os.path.join(args.path_out, 'checkpoints')))
         check('driver: BH ran and wrote checkpoints',
-              written == ['checkpoint_0000.h5', 'checkpoint_0002.h5'],
+              written == ['checkpoint_0000.h5', 'checkpoint_0002.h5',
+                          'checkpoint_0003.h5'],
               f'{written}')
+
+        ckpt_handoff = find_latest_checkpoint(args.path_out, args.niter)
+        check('find_latest_checkpoint locates the end-of-run handoff point',
+              ckpt_handoff is not None and ckpt_handoff.endswith('checkpoint_0003.h5'),
+              f'{ckpt_handoff}')
 
         # postcalc has already undone the 1/norm_const, so vars are in
         # driver units -- the same units the checkpoint stores.
@@ -337,6 +348,75 @@ def test_correct3d_extra_two_column():
             NZ, N, NCODE, BIN, obj_init_file=os.path.join(d, 'obj_init.npy'))
         check('read_correct3d_extra: absent file -> None',
               r_noextra.read_correct3d_extra() is None)
+    finally:
+        COMM.Barrier()
+        if COMM.rank == 0:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_read_obj_centers_a_smaller_seed():
+    """read_obj must CENTER a seed smaller than nobj, not corner-anchor it.
+
+    `test_reader_against_the_documented_layout`'s fixture always has
+    nobj_bin == nobj exactly (no margin), so corner-anchoring and centering
+    are indistinguishable there -- that is how this bug shipped. This test
+    uses a real margin (nobj > the binned seed width), the AtomiumS2 case
+    where obj_init.npy (2048 px) is smaller than the padded object grid.
+    """
+    d = tempfile.mkdtemp(prefix='htc_coded_') if COMM.rank == 0 else None
+    d = COMM.bcast(d, root=0)
+    try:
+        _make_inputs(d)   # codedHT.h5 + code.npy; obj_init.npy overwritten below
+
+        bin_ = 1
+        nzobj_un, nobj_un = 8, 16          # unbinned seed -> binned (4, 8, 8)
+        nzobj, nobj = 8, 24                # grid: margins on ALL THREE axes
+        rng = np.random.default_rng(3)
+        obj = (rng.standard_normal((nzobj_un, nobj_un, nobj_un))
+              + 1j * rng.standard_normal((nzobj_un, nobj_un, nobj_un))
+              ).astype('complex64')
+        obj_path = os.path.join(d, 'obj_init.npy')
+        if COMM.rank == 0:
+            np.save(obj_path, obj)
+        COMM.Barrier()
+
+        mpi = MPIClass(COMM, nzobj, NTHETA, nobj, 'complex64')
+        r = CodedReader(
+            os.path.join(d, 'codedHT.h5'), os.path.join(d, 'code.npy'), COMM,
+            mpi.st_obj, mpi.end_obj, nzobj, nobj,
+            mpi.st_theta, mpi.end_theta, NTHETA,
+            NZ, N, NCODE, bin_, obj_init_file=obj_path)
+
+        got = np.zeros([mpi.end_obj - mpi.st_obj, nobj, nobj], dtype='complex64')
+        r.read_obj(out=got)
+
+        sz  = nzobj_un // 2 ** bin_         # 4  -- seed z extent, binned
+        sxy = nobj_un // 2 ** bin_          # 8  -- seed x/y extent, binned
+        zlo = (nzobj - sz) // 2             # 2  -- z margin per side
+        lo  = (nobj - sxy) // 2             # 8  -- x/y margin per side
+        wobj = _bin_xy(obj.astype('complex128'), bin_, (0, 1, 2))
+
+        # Gather the full grid so the z check does not depend on how the
+        # slab happens to be split across ranks.
+        full = np.concatenate(COMM.allgather(got), axis=0)
+
+        centre = full[zlo:zlo + sz, lo:lo + sxy, lo:lo + sxy]
+        e = float(np.abs(centre - wobj).max() / max(np.abs(wobj).max(), 1e-30))
+        check('read_obj: seed lands CENTERED in x, y AND z',
+              e < 1e-4, f'max rel {e:.2e}')
+
+        check('read_obj: the x/y margin is vacuum',
+              float(np.abs(full[:, :lo, :lo]).max()) == 0.0,
+              f'max abs {float(np.abs(full[:, :lo, :lo]).max()):.2e}')
+
+        # The z margin is what the second bug got wrong: the seed was
+        # anchored at z=0, leaving the vacuum all at the TOP of the grid
+        # instead of split evenly, so every slab held the wrong cross-section.
+        check('read_obj: the z margin is vacuum on BOTH sides, not just the top',
+              float(np.abs(full[:zlo]).max()) == 0.0
+              and float(np.abs(full[zlo + sz:]).max()) == 0.0,
+              f'below {float(np.abs(full[:zlo]).max()):.2e}  '
+              f'above {float(np.abs(full[zlo + sz:]).max()):.2e}')
     finally:
         COMM.Barrier()
         if COMM.rank == 0:

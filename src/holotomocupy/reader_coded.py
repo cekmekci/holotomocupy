@@ -81,11 +81,18 @@ class CodedReader:
                  st_theta, end_theta, ntheta,
                  nz, n, ncode, bin,
                  obj_init_file=None, start_theta=0, stride=1,
-                 correct3d_extra_file=None):
+                 correct3d_extra_file=None, rot_axis_offset=None):
         self.h5_file   = h5_file
         self.code_file = code_file
         self.obj_init_file = obj_init_file
         self.correct3d_extra_file = correct3d_extra_file
+        # (row, col) unbinned px, added to shifts_cor in read_pos. See
+        # config.parse_args_coded: stage 5 folds the same value into the
+        # Paganin seed, so step 6 must apply it too or the seed and the
+        # forward model disagree about where the rotation axis is.
+        self.rot_axis_offset = (np.zeros(2, dtype='float32')
+                                if rot_axis_offset is None else
+                                np.asarray(rot_axis_offset, dtype='float32'))
         self.comm      = comm
         self.rank      = comm.Get_rank()
         self.st_obj    = st_obj
@@ -196,12 +203,20 @@ class CodedReader:
     def read_pos(self, out=None):
         """Object positions for this rank's angles, scaled to the binned grid.
 
-        `shifts_cor` is unbinned, so it is scaled first; `read_correct3d_extra`
-        (step 7's refinement) is already at this bin and is added after,
-        exactly as `Reader.read_pos` does it.
+        `shifts_cor` and `rot_axis_offset` are both unbinned, so they are
+        summed and scaled together; `read_correct3d_extra` (step 7's
+        refinement) is already at this bin and is added after, exactly as
+        `Reader.read_pos` does it.
+
+        `rot_axis_offset` has to be here: stage 5 built the Paganin+FBP seed
+        from `shifts_cor + rot_axis_offset`, so the solver needs the same sum
+        or it projects the object from a rotation axis the seed never used --
+        and the data term then rebuilds the object at its own axis, giving
+        two offset copies.
         """
-        pos = np.array(self.shifts_cor[self.st_theta:self.end_theta],
-                       dtype='float32') / 2 ** self.bin
+        pos = ((np.array(self.shifts_cor[self.st_theta:self.end_theta],
+                         dtype='float32') + self.rot_axis_offset)
+               / 2 ** self.bin)
         extra = self.read_correct3d_extra()
         if extra is not None:
             pos = pos + extra
@@ -273,32 +288,57 @@ class CodedReader:
 
         mmap = np.load(path, mmap_mode='r')
         factor = 2 ** self.bin
-        nzobj_full = mmap.shape[0]
-        nobj_bin = mmap.shape[1] // factor
-        sxy = min(nobj_bin, self.nobj)
+        nz_seed  = mmap.shape[0] // factor      # seed extent on THIS bin's grid
+        nxy_seed = mmap.shape[1] // factor
 
-        if factor == 1:
-            for k in range(self.end_obj - self.st_obj):
-                z = self.st_obj + k
-                if z < nzobj_full:
-                    out[k, :sxy, :sxy] = np.asarray(
-                        mmap[z], dtype='complex64')[:sxy, :sxy]
-        else:
-            N = nobj_bin * factor                      # truncate to a bin multiple
-            acc = np.empty((nobj_bin, nobj_bin), dtype='complex64')
-            for k in range(self.end_obj - self.st_obj):
-                acc[:] = 0
-                count = 0
-                for dz in range(factor):
-                    z = (self.st_obj + k) * factor + dz
-                    if z >= nzobj_full:
-                        break
-                    row = np.asarray(mmap[z], dtype='complex64')[:N, :N]
-                    acc += row.reshape(nobj_bin, factor,
-                                       nobj_bin, factor).mean(axis=(1, 3))
-                    count += 1
-                if count > 0:
-                    out[k, :sxy, :sxy] = (acc / count)[:sxy, :sxy]
+        # CENTRE the seed in the object grid on ALL THREE axes.  The solver
+        # puts the rotation axis at the grid centre, and ShiftFFT takes the
+        # detector window centred in the object too
+        # (eff_dy = (nzpsi - nz)/2, shift_fft.py), so a seed smaller than the
+        # padded grid has to sit in the MIDDLE of it -- and a larger one has
+        # to be cropped symmetrically.
+        #
+        # Anchoring at index 0 on any axis misregisters the seed against the
+        # forward model, and the data term then rebuilds the object where it
+        # DOES expect it: two copies, offset, summed.  In z the offset is
+        # whole slices, so every slab shows two different cross-sections
+        # superimposed.
+        #
+        # `Reader.read_obj` has no counterpart to this because his seed is
+        # always >= the object grid: he only ever crops a centred window, and
+        # never has to place a smaller block into a larger canvas.
+        def _place(seed_n, grid_n):
+            """(src0, dst0, count) mapping a centred seed onto a centred grid."""
+            if seed_n >= grid_n:
+                return (seed_n - grid_n) // 2, 0, grid_n     # crop, centred
+            return 0, (grid_n - seed_n) // 2, seed_n         # place, centred
+
+        zs0, zd0, nzc  = _place(nz_seed,  self.nzobj)
+        xs0, xd0, nxyc = _place(nxy_seed, self.nobj)
+        xlo, xhi = xs0 * factor, (xs0 + nxyc) * factor       # unbinned x/y window
+        acc = np.empty((nxyc, nxyc), dtype='complex64')
+
+        for k in range(self.end_obj - self.st_obj):
+            g = self.st_obj + k                 # this slice's index in the grid
+            if g < zd0 or g >= zd0 + nzc:
+                continue                        # outside the seed: leave vacuum
+            gs = g - zd0 + zs0                  # ... and in the binned seed
+            if factor == 1:
+                out[k, xd0:xd0 + nxyc, xd0:xd0 + nxyc] = np.asarray(
+                    mmap[gs, xlo:xhi, xlo:xhi], dtype='complex64')
+                continue
+            acc[:] = 0
+            count = 0
+            for dz in range(factor):
+                z = gs * factor + dz
+                if z >= mmap.shape[0]:
+                    break
+                row = np.asarray(mmap[z, xlo:xhi, xlo:xhi], dtype='complex64')
+                acc += row.reshape(nxyc, factor,
+                                   nxyc, factor).mean(axis=(1, 3))
+                count += 1
+            if count > 0:
+                out[k, xd0:xd0 + nxyc, xd0:xd0 + nxyc] = acc / count
         del mmap
         if self.rank == 0:
             logger.info(f'initial object from {path} at bin {self.bin}')

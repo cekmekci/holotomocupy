@@ -555,6 +555,19 @@ def parse_args_coded(config_file):
     # Angle subsampling: take every `stride`-th scan angle. The coded h5
     # stores every angle, so this is how a cheap run is made.
     args.stride      = cfg.int("stride", fallback=1)
+    # Rotation-axis offset, (row, col) UNBINNED px, ADDED to shifts_cor by
+    # CodedReader.read_pos. MUST MATCH config_steps15.conf's rot_axis_offset:
+    # stage 5 adds it when it builds the Paganin+FBP seed, and step 6 adds it
+    # again here, independently -- the same value is needed in both places
+    # because each maps between the same two frames on its own. (This mirrors
+    # the multi-distance pipeline's center_src='config' mode, where
+    # rotation_center_shift is "added to the horizontal shift column at step
+    # 4, step 5 and step 6 independently".) It is NOT double counting: step 3
+    # writes shifts_cor WITHOUT it, carrying only the ESRF correct_correct3D
+    # drift table. Leave both at 0 only if you fold the axis into shifts_cor
+    # at stage 3 instead.
+    args.rot_axis_offset = cfg.list("rot_axis_offset", float,
+                                    fallback="0.0,0.0")
     args.nz          = cfg.int("nz")
     args.n           = cfg.int("n")
     args.nzobj       = cfg.int("nzobj")

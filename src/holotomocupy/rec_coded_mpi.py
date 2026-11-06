@@ -625,6 +625,22 @@ class RecCoded:
                     self._record_dobj(res)
                 self.log_iter(vars, i, writer)
 
+        # Always checkpoint AT `niter`, independent of checkpoint_step. The
+        # loop above is `range(start_iter, niter)`, so i never reaches niter
+        # itself -- no choice of checkpoint_step can make vis_debug's
+        # periodic `i % checkpoint_step == 0` write ever land exactly there
+        # (e.g. niter=512, checkpoint_step=32 writes ...416,448,480, never
+        # 512). The next rung's config sets its start_iter to this rung's
+        # niter, and find_latest_checkpoint needs an EXACT
+        # checkpoint_{start_iter:04}.h5 to resume from. Without this, that
+        # lookup silently fails and step6.py falls through to a cold start
+        # from the Paganin seed instead of resuming -- no error raised
+        # anywhere, the wrong behaviour just runs quietly.
+        if writer is not None and self.niter > self.start_iter:
+            writer.write_checkpoint(vars, self.niter, self.norm_const,
+                                    pos_init=self.pos_init,
+                                    pos_code_init=self.pos_code_init)
+
     def precalc(self, vars):
         """One-time setup at the start of BH: the data mask, the frozen code
         offsets, obj normalization, pos snapshots, and the initial proj."""

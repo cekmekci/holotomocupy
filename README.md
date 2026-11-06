@@ -403,9 +403,11 @@ checks in about a minute on one GPU.
 src/holotomocupy/
     rec_mpi.py          # BH iterative solver (MPI-aware)
     rec_nfp_mpi.py      # near-field ptychography probe calibration solver (MPI-aware)
+    rec_coded_mpi.py    # coded-aperture holotomography solver, single distance (MPI-aware)
     tomo.py             # tomographic projection: R, RT, FBP (ramp/shepp/parzen), rec_tomo CG
     shift.py            # B-spline sub-pixel shift operators (S, S*, curlyS, derivatives)
     shift_fft.py        # the same interface via the Fourier shift theorem
+    shift_fft_code.py   # windowed variant for the coded-aperture plane
     autofocus.py        # entropy autofocus for the per-angle drift (step 7)
     psf.py              # Gaussian detector PSF
     paganin.py          # multi-distance Paganin phase retrieval (step 5, demo)
@@ -418,6 +420,7 @@ src/holotomocupy/
     cuda_kernels.py     # raw CUDA kernels (spline interpolation, NUFFT gather/scatter)
     reader.py           # MPI-aware HDF5 reader, raw .vol binary reader, Octave mat loader
     writer.py           # MPI-aware HDF5 writer / checkpointing + TIFF slice output
+    reader_coded.py     # reader/writer for the coded-aperture input set
     mpi_functions.py    # MPI collective helpers (allreduce, redistribute)
     config.py           # configuration file parser (step 6 and steps 1–5)
     utils.py            # GPU/CPU memory utilities, visualization helpers, timer decorator

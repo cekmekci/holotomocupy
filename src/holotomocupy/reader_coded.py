@@ -80,10 +80,12 @@ class CodedReader:
                  st_obj, end_obj, nzobj, nobj,
                  st_theta, end_theta, ntheta,
                  nz, n, ncode, bin,
-                 obj_init_file=None, start_theta=0, stride=1):
+                 obj_init_file=None, start_theta=0, stride=1,
+                 correct3d_extra_file=None):
         self.h5_file   = h5_file
         self.code_file = code_file
         self.obj_init_file = obj_init_file
+        self.correct3d_extra_file = correct3d_extra_file
         self.comm      = comm
         self.rank      = comm.Get_rank()
         self.st_obj    = st_obj
@@ -192,12 +194,56 @@ class CodedReader:
         return out
 
     def read_pos(self, out=None):
-        """Object positions for this rank's angles, scaled to the binned grid."""
-        pos = self.shifts_cor[self.st_theta:self.end_theta] / 2 ** self.bin
+        """Object positions for this rank's angles, scaled to the binned grid.
+
+        `shifts_cor` is unbinned, so it is scaled first; `read_correct3d_extra`
+        (step 7's refinement) is already at this bin and is added after,
+        exactly as `Reader.read_pos` does it.
+        """
+        pos = np.array(self.shifts_cor[self.st_theta:self.end_theta],
+                       dtype='float32') / 2 ** self.bin
+        extra = self.read_correct3d_extra()
+        if extra is not None:
+            pos = pos + extra
         if out is None:
             return pos.astype('float32')
         out[:] = pos
         return out
+
+    def read_correct3d_extra(self):
+        """The per-angle drift refinement, [local_ntheta, 2] px at this bin, or None.
+
+        `step7.py` writes `correct_correct3D_extra.txt` via
+        `holotomocupy.autofocus.write_correct3d_extra` -- Peter's layout,
+        columns (horizontal, vertical), one row per scan angle plus the 180
+        deg repeat.  Same two-column format `Reader.read_correct3d_extra`
+        reads for the multi-distance pipeline.  Unlike that reader there is
+        no `correct3d_bin` here -- this file is always written directly in
+        our object-px convention at whatever bin the step-6 checkpoint it was
+        built from used, so the only scale factor is this reader's own bin.
+        """
+        path = self.correct3d_extra_file
+        if not path:
+            return None
+        if not os.path.exists(path):
+            if self.rank == 0:
+                logger.info(f'correct3d extra: no {os.path.abspath(path)}, '
+                            f'positions unchanged')
+            return None
+
+        raw = np.loadtxt(path)
+        idx = self.ids[self.st_theta:self.end_theta]
+        if raw.shape[0] <= idx.max():
+            raise ValueError(f'{path}: {raw.shape[0]} rows, need more than '
+                             f'{idx.max()} for this scan')
+        scale = np.float32(1.0 / 2 ** self.bin)
+        s = raw[idx, ::-1].astype('float32') * scale          # (y, x), this bin
+        if self.rank == 0:
+            logger.info(f'correct3d extra: {os.path.abspath(path)}, '
+                        f'{raw.shape[0]} rows, at bin {self.bin}: '
+                        f'y ptp {np.ptp(s[:, 0]):.4f}  '
+                        f'x ptp {np.ptp(s[:, 1]):.4f}')
+        return np.ascontiguousarray(s)
 
     def read_pos_code(self, out=None):
         """Code positions for this rank's angles, scaled to the binned grid."""

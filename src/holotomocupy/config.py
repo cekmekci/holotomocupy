@@ -541,6 +541,14 @@ def parse_args_coded(config_file):
     args.code_file = _data_rel(cfg.str("code_file"))
     _init          = cfg.opt_str("obj_init_file")
     args.obj_init_file = _data_rel(_init) if _init else None
+    # Per-angle drift refinement from step7.py, ADDED to shifts_cor by
+    # CodedReader.read_pos. Absent = no correction, which is the default.
+    # Same two-column layout (horizontal, vertical) as the multi-distance
+    # pipeline's correct3d_extra_file, written by
+    # holotomocupy.autofocus.write_correct3d_extra. Resolved against the
+    # CONFIG's own directory, since that is where step7.py drops it.
+    _extra = cfg.opt_str("correct3d_extra_file")
+    args.correct3d_extra_file = cfg.rel(_extra) if _extra else None
 
     args.ntheta      = cfg.int("ntheta")
     args.start_theta = cfg.int("start_theta", fallback=0)
@@ -641,6 +649,13 @@ def parse_args_coded_step0(config_file):
     # is the slack, in detector px, held back from the edge.
     args.fov_margin = cfg.int("fov_margin", fallback=16)
 
+    # RecNFPCoded only: each position reads a window of the aperture plane
+    # instead of the whole thing, same idea as rec_coded_mpi's code_pad_frac
+    # and read by the same helper (shift_fft_code.window_pad). 0 disables
+    # windowing -- step0.py then gets plain RecNFP-equivalent behavior at
+    # whatever memory cost that implies. Unused by plain RecNFP.
+    args.pos_pad_frac = cfg.float("pos_pad_frac", fallback=0.125)
+
     args.niter           = cfg.int("niter")
     args.start_iter      = cfg.int("start_iter",      fallback=0)
     args.checkpoint_step = cfg.int("checkpoint_step", fallback=-1)
@@ -698,6 +713,11 @@ def parse_args_coded_steps15(config_file):
 
     args.ntheta = cfg.int("ntheta")
     args.n      = cfg.int("n")
+
+    # Which stage to (re)start at, for steps15.py. No stage 4 -- CodedReader
+    # bins on the way in, so there is nothing to pre-bin. Same `start_step > N`
+    # gating as the multi-distance pipeline's steps15.py.
+    args.start_step = cfg.int("start_step", fallback=1)
 
     # Source-to-code distance. Stages 3 and 5 read the NOMINAL value out of
     # data_nfp.h5 by default; set this to override with the tuned one that

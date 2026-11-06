@@ -5,6 +5,7 @@
 ```{eval-rst}
 .. automodule:: holotomocupy.rec_mpi
 .. automodule:: holotomocupy.rec_nfp_mpi
+.. automodule:: holotomocupy.rec_coded_mpi
 ```
 
 ## Operators
@@ -13,6 +14,7 @@
 .. automodule:: holotomocupy.tomo
 .. automodule:: holotomocupy.shift
 .. automodule:: holotomocupy.shift_fft
+.. automodule:: holotomocupy.shift_fft_code
 .. automodule:: holotomocupy.propagation
 .. automodule:: holotomocupy.psf
 .. automodule:: holotomocupy.paganin
@@ -31,6 +33,7 @@
 .. automodule:: holotomocupy.config
 .. automodule:: holotomocupy.reader
 .. automodule:: holotomocupy.writer
+.. automodule:: holotomocupy.reader_coded
 .. automodule:: holotomocupy.esrf_meta
 ```
 

@@ -286,5 +286,62 @@ def test_driver_round_trip():
             shutil.rmtree(d, ignore_errors=True)
 
 
+def test_correct3d_extra_two_column():
+    """`read_correct3d_extra` takes step7.py's layout, not the fork's.
+
+    Peter's format -- columns (horizontal, vertical), one row per index --
+    same as `Reader.read_correct3d_extra` for the multi-distance pipeline.
+    Checks the column swap (file is x,y; CodedReader returns y,x) and that
+    `read_pos` adds it AFTER scaling `shifts_cor` by `1/2**bin`, matching
+    `Reader.read_pos`'s order.
+    """
+    d = tempfile.mkdtemp(prefix='htc_coded_') if COMM.rank == 0 else None
+    d = COMM.bcast(d, root=0)
+    try:
+        truth = _make_inputs(d)
+        mpi = MPIClass(COMM, NOBJ, NTHETA, NOBJ, 'complex64')
+
+        rng = np.random.default_rng(1)
+        # one extra row past ntheta, as write_correct3d_extra emits (ntheta+1
+        # rows for ESRF's 0..180 inclusive grid); only the first ntheta are used
+        extra_xy = rng.standard_normal((NTHETA + 1, 2)).astype('float32')
+        extra_path = os.path.join(d, 'correct_correct3D_extra.txt')
+        if COMM.rank == 0:
+            np.savetxt(extra_path, extra_xy, fmt='%.8e')
+        COMM.Barrier()
+
+        r = CodedReader(
+            os.path.join(d, 'codedHT.h5'), os.path.join(d, 'code.npy'), COMM,
+            mpi.st_obj, mpi.end_obj, NOBJ, NOBJ,
+            mpi.st_theta, mpi.end_theta, NTHETA,
+            NZ, N, NCODE, BIN, obj_init_file=os.path.join(d, 'obj_init.npy'),
+            correct3d_extra_file=extra_path)
+
+        got = r.read_correct3d_extra()
+        want_yx = extra_xy[mpi.st_theta:mpi.end_theta, ::-1] / 2 ** BIN
+        check('read_correct3d_extra: column order (y,x) and bin scale',
+              np.allclose(got, want_yx, atol=1e-6),
+              f'max abs {np.abs(got - want_yx).max():.2e}')
+
+        pos = r.read_pos()
+        want_pos = (truth['shifts_cor'][mpi.st_theta:mpi.end_theta]
+                   / 2 ** BIN) + want_yx
+        check('read_pos: shifts_cor scaled by bin, extra added after',
+              np.allclose(pos, want_pos, atol=1e-6),
+              f'max abs {np.abs(pos - want_pos).max():.2e}')
+
+        r_noextra = CodedReader(
+            os.path.join(d, 'codedHT.h5'), os.path.join(d, 'code.npy'), COMM,
+            mpi.st_obj, mpi.end_obj, NOBJ, NOBJ,
+            mpi.st_theta, mpi.end_theta, NTHETA,
+            NZ, N, NCODE, BIN, obj_init_file=os.path.join(d, 'obj_init.npy'))
+        check('read_correct3d_extra: absent file -> None',
+              r_noextra.read_correct3d_extra() is None)
+    finally:
+        COMM.Barrier()
+        if COMM.rank == 0:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == '__main__':
     sys.exit(run(globals(), sys.argv[1:]))

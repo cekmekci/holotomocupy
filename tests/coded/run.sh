@@ -21,7 +21,7 @@ NP="${NP:-2}"
 
 filter="${1:-}"
 fail=0
-for f in test_shift_code test_cascade_coded test_rec_coded test_io_coded; do
+for f in test_shift_code test_cascade_coded test_rec_coded test_io_coded test_rec_nfp_coded; do
     [ -n "${filter}" ] && case "${f}" in *"${filter}"*) ;; *) continue ;; esac
     echo "================ ${f}.py"
     "${PY}" "${here}/${f}.py" || fail=1
@@ -34,6 +34,9 @@ if [ -z "${filter}" ]; then
     echo "================ test_rec_coded.py mpi   (${NP} ranks)"
     "${PY}" "${here}/test_rec_coded.py" test_mpi || fail=1   # writes the reference
     "${MPIRUN}" -np "${NP}" "${PY}" "${here}/test_rec_coded.py" mpi || fail=1
+    echo "================ test_rec_nfp_coded.py mpi   (${NP} ranks)"
+    "${PY}" "${here}/test_rec_nfp_coded.py" mpi || fail=1   # writes the reference
+    "${MPIRUN}" -np "${NP}" "${PY}" "${here}/test_rec_nfp_coded.py" mpi || fail=1
 fi
 
 [ "${fail}" -eq 0 ] && echo "ALL CODED TESTS PASSED" || echo "SOME CODED TESTS FAILED"

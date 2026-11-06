@@ -513,3 +513,96 @@ def parse_args_gen(config_file):
     args.log_level = cfg.str("log_level", fallback="INFO")
 
     return args
+
+
+def parse_args_coded(config_file):
+    """Config for the coded-aperture reconstruction (step6 of that pipeline).
+
+    `parse_args` minus everything multi-distance -- `ndist`, `lam_prbfit`, the
+    `correct3d` block, the mosaic tiles -- plus the code-plane parameters and a
+    five-entry `rho`.  See rec_coded_mpi.RecCoded for why the probe-fit term
+    and the shrinkage model are absent rather than merely unset.
+    """
+    cfg = _load(config_file)
+    args = SimpleNamespace()
+
+    args.path_out = cfg.path("path_out")
+    _path         = cfg.path("path", fallback=args.path_out)
+    args.in_file  = os.path.join(_path, cfg.str("in_file"))
+    # The code plane and the initial object are separate .npy files: both are
+    # written by the coded preprocessing, not by a step of this pipeline.
+    # Resolved against `path` (where the h5 lives) rather than the config's
+    # own directory, since that is where the preprocessing drops them; an
+    # absolute path wins, which is what obj_init_file usually needs -- it
+    # often comes from the matching no-code run.
+    def _data_rel(p):
+        return p if os.path.isabs(p) else os.path.join(_path, p)
+
+    args.code_file = _data_rel(cfg.str("code_file"))
+    _init          = cfg.opt_str("obj_init_file")
+    args.obj_init_file = _data_rel(_init) if _init else None
+
+    args.ntheta      = cfg.int("ntheta")
+    args.start_theta = cfg.int("start_theta", fallback=0)
+    # Angle subsampling: take every `stride`-th scan angle. The coded h5
+    # stores every angle, so this is how a cheap run is made.
+    args.stride      = cfg.int("stride", fallback=1)
+    args.nz          = cfg.int("nz")
+    args.n           = cfg.int("n")
+    args.nzobj       = cfg.int("nzobj")
+    args.nobj        = cfg.int("nobj")
+    args.ncode       = cfg.int("ncode")
+    args.tomo_upsample = cfg.int("tomo_upsample", fallback=1)
+    args.mask        = cfg.float("mask")
+    args.bin         = cfg.int("bin")
+
+    # Source-to-code distance. NOT read from the h5: the distance that
+    # actually focuses the aperture differs from the nominal one recorded at
+    # the beamline, so it is a tuned parameter.
+    args.z1_code = cfg.float("z1_code")
+    # Each projection shifts a window of the code plane rather than the whole
+    # of it. The pad is code_pad_frac*n per side, rounded up to a
+    # cuFFT-friendly window size. Accuracy improves as ~1/sqrt(pad); see
+    # shift_fft_code. Must be > 0.
+    args.code_pad_frac = cfg.float("code_pad_frac", fallback=0.125)
+
+    args.psf_sigma = cfg.float("psf_sigma", fallback=0.0)  # binned detector px
+    args.model     = _parse_model(cfg)
+    args.lam_laplacian = cfg.float("lam_laplacian", fallback=0.0)
+
+    # [obj, prb, pos, code, pos_code]. rho[obj] must be 1 whenever
+    # lam_laplacian > 0 -- RecCoded refuses otherwise, because the Laplacian
+    # gradient is added without rho_sq['obj'] while the misfit half carries it.
+    args.rho = cfg.list("rho", float)
+    args.estimate_rho       = cfg.bool("estimate_rho",       fallback=False)
+    args.rho_estimate_niter = cfg.int ("rho_estimate_niter", fallback=16)
+    args.rho_trial_error_step = cfg.int("rho_trial_error_step", fallback=-1)
+
+    # Hold the aperture and/or its positions fixed. Useful when the code has
+    # been calibrated by a separate near-field ptychography run and only the
+    # sample is being solved for.
+    args.freeze_code     = cfg.bool("freeze_code",     fallback=False)
+    args.freeze_pos_code = cfg.bool("freeze_pos_code", fallback=False)
+
+    args.mask_oob        = cfg.bool ("mask_oob",        fallback=True)
+    args.mask_oob_margin = cfg.float("mask_oob_margin", fallback=2.0)
+
+    args.fused_hessian       = cfg.bool("fused_hessian",       fallback=True)
+    args.check_fused_hessian = cfg.bool("check_fused_hessian", fallback=False)
+    args.check_approx        = cfg.bool("check_approx",        fallback=False)
+
+    args.niter  = cfg.int("niter")
+    args.nchunk = cfg.int("nchunk")
+    args.checkpoint_step = cfg.int("checkpoint_step")
+    args.error_step      = cfg.int("error_step")
+    args.debug_step      = cfg.int("debug_step", fallback=-1)
+    args.start_iter      = cfg.int("start_iter", fallback=0)
+
+    # 'fft' (default) or 'cubic' for the OBJECT-plane shift. One distance
+    # means m == 1, so fft never takes the chirp-z and is both faster and
+    # exact for a band-limited input. The code-plane shift is always fft.
+    args.shift_type = cfg.str("shift_type", fallback="fft")
+    args.log_level  = cfg.str("log_level",  fallback="WARNING")
+    args.energy     = cfg.float("energy", fallback=None)
+
+    return args

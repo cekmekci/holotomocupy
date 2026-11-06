@@ -1,19 +1,21 @@
 # demo — the pipeline end to end on synthetic data
 
-Two steps, entirely synthetic, small enough to run on one GPU in a couple of
-minutes. No beamline data, no mounted filesystems: the phantom and the probe
-are built here, the data are simulated with the same forward model the solver
-inverts, and the truth is kept so every number can be checked.
+Three steps, entirely synthetic, small enough to run on one GPU in a couple of
+minutes. No beamline data, no mounted filesystems: the phantom, the probe and
+the coded aperture are built here, the data are simulated with the same forward
+model the solver inverts, and the truth is kept so every number can be checked.
 
 | | notebook (1 GPU) | script (N GPUs) | what it does |
 |---|---|---|---|
 | step 0 | [`01_nfp_probe.ipynb`](01_nfp_probe.ipynb) | [`01_nfp_probe.py`](01_nfp_probe.py) | probe retrieval by near-field ptychography from a Siemens star, `npos` scan positions |
 | step 6 | [`02_holotomography.ipynb`](02_holotomography.ipynb) | [`02_holotomography.py`](02_holotomography.py) | holotomography of a 3-D phantom, 4 distances |
+| step 6 (coded) | [`03_coded_holotomography.ipynb`](03_coded_holotomography.ipynb) | [`03_coded_holotomography.py`](03_coded_holotomography.py) | the same phantom through a coded aperture, **1** distance |
 
 ```bash
 jupyter lab                            # then open either notebook
 ./run.sh 01_nfp_probe.py               # 1 GPU
 ./run.sh 02_holotomography.py          # 1 GPU
+./run.sh 03_coded_holotomography.py    # 1 GPU
 ./run_mpi.sh 4 02_holotomography.py    # 4 GPUs
 ./run.sh 02_holotomography.py --n 256 --ntheta 360 --niter 257
 ```
@@ -29,9 +31,14 @@ EDF→HDF5, outlier removal, shift bookkeeping, multi-distance back-projection,
 Paganin+FBP. None of that applies here — there are no files to convert and no
 shifts to look up, so the demo calls `gen_data` to produce the intensities
 directly and starts the solver from zero. Everything downstream of that is the
-production code path: `RecNFP` and `Rec` are the same classes
+production code path: `RecNFP`, `Rec` and `RecCoded` are the same classes
 `experimental/*/step0.py` and `step6.py` use, with the same config fields,
 and they write the same checkpoints, TIFFs and `conv.csv` into `demo_out/`.
+
+Demo 3 skips one more thing: the aperture calibration. A real coded run
+measures the mask first, by near-field ptychography on it alone — demo 1 with
+the mask in place of the sample — so the honest starting point there is a
+*measured* code, the truth plus 2% error, rather than a flat one.
 
 ## Measured
 
@@ -42,6 +49,8 @@ and they write the same checkpoints, TIFFs and `conv.csv` into `demo_out/`.
 | `02_holotomography.py` (n 128, 180 angles, 4 distances, 100 iters) | Quadro RTX 8000 | `cubic` | positions 0.248 → **0.048 px**, object corr **0.978** |
 | `02_holotomography.py` | **A100-40GB** | `fft` | positions 0.248 → **0.052 px** |
 | `02_holotomography.py` | Quadro RTX 8000 | `fft` | **crashes** at iter ~26, see below |
+| `03_coded_holotomography.py` (n 128, 180 angles, 1 distance, code 256², 257 iters) | A100-40GB | `fft` | object corr **0.842**, positions 0.256 → **0.049 px**, code positions 0.262 → **0.028 px** |
+| `03_coded_holotomography.py --freeze-code` | A100-40GB | `fft` | object corr **0.875**, positions 0.256 → **0.047 px**, code positions 0.262 → **0.017 px** |
 
 ### `shift_type`: `fft` vs `cubic`
 
@@ -76,6 +85,19 @@ Measured on NFP (single distance, so `m = 1` and no chirp-z):
 The `fft` number is the same with `--paganin 0`, so that cost is `fft` itself,
 not the start.
 
+### demo 3: refining the aperture costs a little
+
+Both rows above start from the same 2%-wrong code. Letting the solver refine
+it (the default) ends at code correlation 0.9991, i.e. slightly *worse* than
+the 0.9999 it started from, and the object lands at 0.842 instead of 0.875.
+
+That is not a bug, it is the cross-talk you would expect. The object starts
+from zero and the probe from 1, so the first iterations carry a large
+residual, and the one variable that is already almost right — the mask —
+absorbs some of it. `--freeze-code` holds it fixed and is what a real run
+would do once the aperture has been calibrated; the default refines it because
+a demo of this solver should exercise the variable it adds.
+
 The `pos abs error` the solver logs during BH is measured from the **starting
 guess**, so it grows as the refinement works; the line printed at the end is
 the distance to the truth, which is the one to read.
@@ -84,8 +106,10 @@ the distance to the truth, which is the one to read.
 
 - [`phantoms.py`](phantoms.py) — `siemens_star`, `star_projection`,
   `phantom3d` (nested cube frames, rotated off-axis so no edge lines up with
-  the grid, then low-passed) and `id16a_probe` (the measured probe from
-  `../data/prb_id16a`, cropped and normalised).
+  the grid, then low-passed), `id16a_probe` (the measured probe from
+  `../data/prb_id16a`, cropped and normalised) and `coded_aperture` (random
+  blocks of absorber, low-passed — the code-plane shift is the sinc
+  interpolant, so a hard binary edge would ring under a sub-pixel shift).
 - [`run.sh`](run.sh) / [`run_mpi.sh`](run_mpi.sh) — set `PYTHONPATH`, pick the
   env, keep the cuPy cache off `/tmp`. `DEMO_PYTHON` overrides the interpreter,
   `MPIRUN` the launcher.

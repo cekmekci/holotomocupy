@@ -157,3 +157,120 @@ def id16a_probe(n, ndist=1, smooth=4.0):
     filt = fftshift(np.exp(-smooth * (vx**2 + vy**2)).astype('float32'))
     prb = ifft2(fft2(prb) * filt).astype('complex64')
     return prb / np.mean(np.abs(prb), axis=(1, 2))[:, None, None]
+
+
+# -------------------------------------------------------- the coded mask ----
+# Ported from phascade/simulations/esrf_simulation/physics.py, which is the
+# validated single-coded-aperture ESRF simulation.  Three things in here are
+# easy to get wrong and all three matter:
+#
+#   * the pattern is built on the APERTURE's own plane pixel size, not the
+#     sample voxel.  Those differ by the code-plane magnification -- 342 nm
+#     against 80 nm in the ESRF geometry -- so using the voxel misstates the
+#     fabricated feature size by 4.3x.
+#   * the transmission is real gold: exp(i*k*(-delta + i*beta)*t*pattern) with
+#     delta, beta from xraylib.  Contrast goes as 2|sin(phi/2)|, so it PEAKS at
+#     the thickness that gives pi (6.49 um of Au at 33.35 keV) -- a micron is
+#     only a quarter of that and is why thin apertures underperform.
+#   * the lattice is generated directly in rotated coordinates from a hash, so
+#     a rotated mask costs no interpolation, and supersampling antialiases the
+#     cell edges instead of an FFT low-pass.
+
+# delta, beta for Au (19.3 g/cm^3), from xraylib.  Pinned here because
+# xraylib is NOT a holotomocupy dependency and the demo must run without it;
+# au_optical_constants prefers the live value when it is installed.
+_AU_PINNED = {33.35: (2.863698e-06, 1.190692e-07),
+              17.10: (1.066593e-05, 1.306277e-06)}
+
+
+def au_optical_constants(energy_kev, material='Au', density=19.3):
+    """(delta, beta) at energy_kev.  xraylib when importable, else the table."""
+    try:
+        import xraylib
+        return (1 - xraylib.Refractive_Index_Re(material, energy_kev, density),
+                xraylib.Refractive_Index_Im(material, energy_kev, density))
+    except ImportError:
+        key = min(_AU_PINNED, key=lambda k: abs(k - energy_kev))
+        if abs(key - energy_kev) > 1e-6 or material != 'Au':
+            raise ImportError(
+                f'xraylib is needed for {material} at {energy_kev} keV; '
+                f'pinned values exist only for Au at {sorted(_AU_PINNED)} keV')
+        return _AU_PINNED[key]
+
+
+def thickness_for_phase(phase_rad, energy_kev, material='Au', density=19.3):
+    """Absorber thickness [m] giving `phase_rad` of phase shift.  t_pi is the
+    thickness where the code contrast 2|sin(phi/2)| is largest."""
+    delta, _ = au_optical_constants(energy_kev, material, density)
+    k = 2 * np.pi / (1.24e-09 / energy_kev)
+    return phase_rad / (k * delta)
+
+
+def _hash_bits(iu, iv, seed):
+    """Deterministic 0/1 per integer cell index (splitmix64 finalizer), so the
+    pattern can be generated directly in rotated coordinates with no
+    interpolation."""
+    u64 = np.uint64
+    seed_term = u64((seed & 0xFFFFFFFF) * 0x165667B19E3779F9 % (1 << 64))
+    h = (iu.astype(u64) * u64(0x9E3779B97F4A7C15)) ^ \
+        (iv.astype(u64) * u64(0xC2B2AE3D27D4EB4F)) ^ seed_term
+    h ^= h >> u64(30); h *= u64(0xBF58476D1CE4E5B9)
+    h ^= h >> u64(27); h *= u64(0x94D049BB133111EB)
+    h ^= h >> u64(31)
+    return (h & u64(1)).astype(np.float32)
+
+
+def code_pattern(n, feature_m, pixel_size_m, angle_deg=45.0, seed=0,
+                 supersample=2, rows_per_chunk=512, shape='square'):
+    """(n, n) float32 fill fraction per pixel of a random binary lattice.
+
+    shape='square': each occupied cell filled completely, feature = side,
+    fill ~50%.  shape='circle': inscribed disc per cell, feature = diameter,
+    fill = 0.5*pi/4 = 39.3%.  `supersample` averages s x s sub-samples per
+    pixel to antialias the edges.
+    """
+    if shape not in ('square', 'circle'):
+        raise ValueError(f"shape must be 'square' or 'circle', got {shape!r}")
+    s = max(1, int(supersample))
+    w = float(feature_m) / float(pixel_size_m)          # cell side, in pixels
+    if w < 1e-6:
+        raise ValueError('feature size collapses to zero pixels')
+    th = np.deg2rad(angle_deg)
+    ct, st = np.cos(th), np.sin(th)
+
+    sub = (np.arange(s, dtype=np.float64) + 0.5) / s - 0.5
+    cols = np.arange(n, dtype=np.float64) - n / 2.0 + 0.5
+    xs = (cols[:, None] + sub[None, :]).ravel()
+
+    out = np.empty((n, n), dtype=np.float32)
+    for r0 in range(0, n, rows_per_chunk):
+        r1 = min(r0 + rows_per_chunk, n)
+        rows = np.arange(r0, r1, dtype=np.float64) - n / 2.0 + 0.5
+        ys = (rows[:, None] + sub[None, :]).ravel()
+        Y, X = np.meshgrid(ys, xs, indexing='ij')
+        u = (X * ct + Y * st) / w
+        v = (-X * st + Y * ct) / w
+        iu = np.floor(u).astype(np.int64)
+        iv = np.floor(v).astype(np.int64)
+        bits = _hash_bits(iu, iv, seed)
+        if shape == 'circle':
+            du, dv = u - iu - 0.5, v - iv - 0.5
+            bits = bits * ((du * du + dv * dv) <= 0.25)
+        out[r0:r1] = bits.reshape(r1 - r0, s, n, s).mean(axis=(1, 3))
+    return out
+
+
+def coded_aperture(n, feature_m, pixel_size_m, thickness_m, energy_kev,
+                   angle_deg=45.0, seed=0, supersample=2, shape='square',
+                   material='Au', density=19.3):
+    """complex64 (n, n): exp(i*k*(-delta + i*beta)*t*pattern).
+
+    `pixel_size_m` must be the APERTURE plane's pixel size, not the sample
+    voxel -- see the note at the top of this section.
+    """
+    pattern = code_pattern(n, feature_m, pixel_size_m, angle_deg, seed,
+                           supersample, shape=shape)
+    delta, beta = au_optical_constants(energy_kev, material, density)
+    k = 2 * np.pi / (1.24e-09 / energy_kev)
+    arg = 1j * k * pattern * (-delta + 1j * beta) * float(thickness_m)
+    return np.exp(arg).astype('complex64')

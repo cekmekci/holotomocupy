@@ -204,7 +204,34 @@ source "${VENV_DIR}/bin/activate"
 pip install -e /path/to/holotomocupy
 ```
 
-`experimental/polaris_env.sh` does exactly this inside the job, plus the Lustre / MPI-IO settings parallel HDF5 needs on `/eagle`. Override the venv it picks with `HTC_VENV`, and set `HTC_ENV_CHECK=1` to print what resolved.
+**`--system-site-packages` is not optional.** `mpi4py`, `h5py` (built with MPI support) and `cupy` all come from ALCF's base conda module, not from `pip install -e .` — `setup.py` has no `install_requires` at all, so that command only ever installs the `holotomocupy` package itself. Leave the flag off (or rebuild the venv some other way that drops it) and the venv silently loses all three; the failure shows up later, mid-job, as `ModuleNotFoundError: No module named 'cupy'` from `gpu_healthcheck.sh` or `step6.py`, not at venv-creation time. Check an existing venv with:
+```bash
+grep include-system-site-packages "${VENV_DIR}/pyvenv.cfg"   # must say true
+```
+If it says `false`, don't patch it — `rm -rf "${VENV_DIR}"` and recreate with the block above.
+
+**`cupy`, `nvtx` and `pandas` still need installing by hand even with the flag set right.** `--system-site-packages` only exposes whatever ALCF's base conda module happens to ship — `cupy` is in there, but `nvtx` and `pandas` are not (both are hard, unconditional imports in `rec_mpi.py`/`rec_coded_mpi.py`/`rec_nfp_mpi.py`, so there's no deferring this). Install only these three into the venv:
+```bash
+source "${VENV_DIR}/bin/activate"
+pip install cupy-cuda12x nvtx pandas
+```
+**Do NOT run `pip install -r requirements.txt` on Polaris.** That file is the no-conda-at-all fallback for a plain workstation; its `mpi4py`/`h5py`/`numpy`/`scipy` entries are generic PyPI wheels that would silently overwrite the correctly MPI-linked versions `--system-site-packages` already gave you — `h5py` in particular would go from the Cray-MPICH-aware build back to a non-parallel one, breaking checkpoint I/O with no error at install time. See the warning at the top of `requirements.txt` itself.
+
+Verify everything resolves correctly before trusting the venv with a real job:
+```bash
+OPENBLAS_NUM_THREADS=1 python -c "
+from mpi4py import MPI
+import h5py, cupy, nvtx, pandas
+print('mpi4py:', MPI.Get_library_version().split(chr(10))[0])
+print('h5py:', h5py.__version__, 'mpi=', h5py.get_config().mpi)   # must be True
+print('cupy:', cupy.__version__)
+print('nvtx:', nvtx.__file__)
+print('pandas:', pandas.__version__)
+"
+```
+`OPENBLAS_NUM_THREADS=1` matters only for this interactive check — Polaris login nodes cap the per-process thread count low enough that numpy's default OpenBLAS thread pool (sized to the node's CPU count) fails with `pthread_create: Resource temporarily unavailable` and numpy misreports it as a bogus "importing numpy from its source directory" error. A PBS job on a compute node doesn't hit this; don't chase it there.
+
+`experimental/polaris_env.sh` builds the venv path the same way inside the job, plus the Lustre / MPI-IO settings parallel HDF5 needs on `/eagle`. Override the venv it picks with `HTC_VENV`, and set `HTC_ENV_CHECK=1` to print what resolved and run the same mpi4py/h5py/cupy import check automatically.
 
 See [ALCF Python docs](https://docs.alcf.anl.gov/polaris/data-science/python/) for more details.
 

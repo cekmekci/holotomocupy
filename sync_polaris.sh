@@ -1,5 +1,5 @@
 #!/bin/bash
-# Mirror this working tree to Polaris:~/holotomocupy_gpu_reduced.
+# Mirror this working tree to Polaris:~/holotomocupy.
 #
 #   ./sync_polaris.sh -n     dry run -- always do this first
 #   ./sync_polaris.sh        do it
@@ -14,7 +14,7 @@ set -euo pipefail
 # The FQDN, not the `polaris` alias: a stray `Host polaris / HostName polaris`
 # stanza at the top of ~/.ssh/config shadows the real one, and the bare alias
 # then fails with "No route to host".
-DEST=polaris.alcf.anl.gov:holotomocupy_gpu_reduced/
+DEST=polaris.alcf.anl.gov:holotomocupy/
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/"
 
 # --delete makes this a mirror.  Each exclusion is therefore also a promise
@@ -73,4 +73,4 @@ echo "Reinstall on Polaris ONLY when a module is added/renamed; ordinary edits"
 echo "are picked up live by the editable install:"
 echo "  ssh polaris"
 echo "  module use /soft/modulefiles; module load conda; conda activate base"
-echo "  cd ~/holotomocupy_gpu_reduced && python -m pip install -e . --user --no-deps --no-build-isolation"
+echo "  cd ~/holotomocupy && python -m pip install -e . --user --no-deps --no-build-isolation"

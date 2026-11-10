@@ -16,6 +16,7 @@ dependencies:
   - mpi4py
   - h5py=*=mpi_openmpi_*
   - numpy
+  - pandas
   - scipy
   - matplotlib
   - tifffile

@@ -1,10 +1,20 @@
 # pip-only install (conda is preferred -- see environment.yml -- because h5py
 # needs an MPI-enabled build that pip cannot provide on its own).
 # Swap cupy-cuda12x for cupy-cuda13x on a CUDA 13 driver.
+#
+# ON POLARIS (or any venv built with --system-site-packages on top of a conda
+# module): do NOT `pip install -r requirements.txt` wholesale. mpi4py, h5py,
+# numpy and scipy already come from the system conda with the right MPI
+# linkage (h5py in particular -- the plain pip wheel below is NOT built with
+# MPI support, and installing it over the system one silently breaks parallel
+# checkpoint I/O with no warning). Only cupy-cuda12x, nvtx and dxchange are
+# ever safe to pip install on top of a system-site-packages venv -- see
+# README.md's "Running on Polaris" section.
 cupy-cuda12x
 mpi4py
 h5py
 numpy
+pandas
 scipy
 matplotlib
 tifffile

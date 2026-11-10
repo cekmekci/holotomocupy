@@ -14,7 +14,7 @@ module use /soft/modulefiles
 module load conda
 conda activate base
 CONDA_NAME=$(echo "${CONDA_PREFIX}" | tr '\/' '\t' | sed -E 's/mconda3|\/base//g' | awk '{print $NF}')
-source "${HTC_VENV:-/home/vvnikitin/venvs/${CONDA_NAME}}/bin/activate"
+source "${HTC_VENV:-/home/cekmekci/venvs/${CONDA_NAME}}/bin/activate"
 
 export MATHDX_ROOT=${MATHDX_ROOT:-/eagle/APS_IRI/vnikitin/nvidia/nvidia-mathdx-25.12.1-cuda12/nvidia/mathdx/25.12}
 

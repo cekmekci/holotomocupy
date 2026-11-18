@@ -18,6 +18,18 @@ source "${HTC_VENV:-/home/cekmekci/venvs/${CONDA_NAME}}/bin/activate"
 
 export MATHDX_ROOT=${MATHDX_ROOT:-/eagle/APS_IRI/vnikitin/nvidia/nvidia-mathdx-25.12.1-cuda12/nvidia/mathdx/25.12}
 
+# Every rank's numpy sizes its OpenBLAS thread pool to the node's FULL core
+# count by default, with no idea 3 other ranks are about to do the same --
+# NRANKS=4 ranks oversubscribing one node's threads 4x over. Seen before as
+# `pthread_create: Resource temporarily unavailable` cascading into a bogus
+# "you should not try to import numpy from its source directory" ImportError
+# (numpy's own misdiagnosis of a thread-pool init failure, not a real path
+# problem) -- first caught on a shared login node, but the same oversubscription
+# exists inside a real job too. Each rank gets its own GPU already; OpenBLAS
+# work here is incidental host-side numpy, not a bottleneck, so 1 is correct,
+# not just safe.
+export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-1}
+
 # GPU-aware MPI off: nothing hands MPI a device pointer (the Alltoallw buffer
 # is pinned HOST memory, allreduces take host arrays or an explicit .get()).
 export MPICH_GPU_SUPPORT_ENABLED=0

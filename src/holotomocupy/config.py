@@ -726,6 +726,12 @@ def parse_args_coded_steps15(config_file):
 
     args.ntheta = cfg.int("ntheta")
     args.n      = cfg.int("n")
+    # Object grid, unbinned -- stage 5 pads/tapers the detector-sized
+    # Paganin input up to this before FBP (steps15.py), instead of leaving
+    # the jump to step 6's CodedReader.read_obj to hard-zero-pad after the
+    # fact. MUST MATCH config_step6_bin0.conf's nobj (stage 5 always runs
+    # unbinned, bin 0).
+    args.nobj   = cfg.int("nobj")
 
     # Which stage to (re)start at, for steps15.py. No stage 4 -- CodedReader
     # bins on the way in, so there is nothing to pre-bin. Same `start_step > N`
@@ -741,8 +747,45 @@ def parse_args_coded_steps15(config_file):
     args.rot_axis_offset = cfg.list("rot_axis_offset", float,
                                     fallback="0.0,0.0")
     # delta/beta for the per-projection Paganin inversion in stage 5.
-    args.paganin    = cfg.float("paganin", fallback=24.05)
-    args.fbp_filter = cfg.str("fbp_filter", fallback="shepp")
+    # NOTE: before 2026-11-11 this key was dead -- stage 5 hardcoded 20 and
+    # never read it. It is wired up now.
+    args.paganin       = cfg.float("paganin", fallback=24.05)
+    args.paganin_alpha = cfg.float("paganin_alpha", fallback=1e-2)
+    args.fbp_filter    = cfg.str("fbp_filter", fallback="ramp")
+
+    # Stage 5 processing, ported from AtomiumS1_HT_RD300/steps15.py after the
+    # ablation in step5_paganin_ablation.ipynb. Defaults are that notebook's
+    # settled values; all of these match the advisor's pipeline except where
+    # the coded aperture forces a difference (see steps15.py stage 5).
+    #
+    # Gaussian FWHM in UNBINNED px applied to numerator AND denominator
+    # before the flat-field ratio (his :894-895). 0 disables.
+    args.smooth_fwhm = cfg.float("smooth_fwhm", fallback=17.0)
+    # Rectangle (row0, row1, col0, col1, fractions of the DETECTOR) whose mean on
+    # angle 0's division is the level the pad ramps to.
+    args.bg_box = cfg.list("bg_box", float, fallback="0.05,0.15,0.05,0.15")
+    # Rectangle (fractions of the PADDED frame) whose mean on angle 0's Paganin
+    # phase is subtracted from every angle (his :1231, :1263).
+    args.paganin_bg_box = cfg.list("paganin_bg_box", float, fallback="0.15,0.25,0.15,0.25")
+    # Unbinned px stripped off every side of the division before padding: the rim
+    # where the modelled flat field is unreliable.
+    args.edge_crop = cfg.int("edge_crop", fallback=36)
+    # Circular FBP mask radius as a fraction of nobj (his :1309 uses 0.9).
+    args.mask_r = cfg.float("mask_r", fallback=0.9)
+
+    # step7.py's per-angle drift correction, optional. When set, stage 5 adds
+    # it to pos_obj (shifts_cor + rot_axis_offset) before the per-projection
+    # shift, so the rebuilt seed is geometrically consistent with the
+    # corrected positions from iteration 0 -- see steps15.py stage 5. Same
+    # 2-column (horizontal, vertical) convention as
+    # CodedReader.read_correct3d_extra, but with NO 1/2**bin scale factor:
+    # the file is already in unbinned object px, and stage 5 runs unbinned.
+    # Resolved against the CONFIG's own directory, exactly as parse_args_coded
+    # does for the same key: that is where step7.py drops it (its --out
+    # defaults to the directory of the config it was given) and where the
+    # step-6 configs look for it. An absolute path still wins.
+    _extra15 = cfg.opt_str("correct3d_extra_file")
+    args.correct3d_extra_file = cfg.rel(_extra15) if _extra15 else None
 
     args.log_level = cfg.str("log_level", fallback="INFO")
     return args

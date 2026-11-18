@@ -7,10 +7,10 @@ Launch with mpirun / mpiexec, one rank per GPU:
 The solver jointly refines the 3-D object, the probe, the coded aperture, and
 both position sets (object and code) with the Bilinear-Hessian method.
 
-ONE BIN LEVEL PER INVOCATION, as in the multi-distance pipeline: the
-coarse-to-fine ladder lives in run.sh, one config per rung, each reading the
-previous rung's checkpoint through `start_iter` / the checkpoint directory.
-(The older coded driver ran `--bins 3,2,1` inside a single process instead.)
+ONE BIN LEVEL PER INVOCATION, as in the multi-distance pipeline: the ladder
+lives in polaris_run.sh, one config per rung, each reading the previous
+rung's checkpoint through `start_iter` / the checkpoint directory. (The
+older coded driver ran `--bins 3,2,1` inside a single process instead.)
 
 Checkpoints go to `path_out/checkpoints`; a run resumes automatically from the
 latest one if it exists.
@@ -47,6 +47,8 @@ reader = CodedReader(
     args.nz, args.n, args.ncode, args.bin,
     obj_init_file=args.obj_init_file,
     start_theta=args.start_theta, stride=args.stride,
+    correct3d_extra_file=args.correct3d_extra_file,
+    rot_axis_offset=args.rot_axis_offset,
 )
 writer = CodedWriter(
     args.path_out, comm,

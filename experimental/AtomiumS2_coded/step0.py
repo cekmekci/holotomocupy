@@ -121,6 +121,7 @@ cl = RecNFPCoded(SimpleNamespace(
     rho_estimate_niter      = args.rho_estimate_niter,
     rho_trial_error_step    = args.rho_trial_error_step,
     pos_pad_frac            = args.pos_pad_frac,
+    clip_passive            = args.clip_passive,
     path_out                = args.path_out,
     shift_type              = args.shift_type,
     comm                    = comm,

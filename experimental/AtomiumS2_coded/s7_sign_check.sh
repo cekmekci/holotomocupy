@@ -49,11 +49,19 @@ echo "python: $(which python)"
 OUT="${HOME}/s7_check"
 mkdir -p "${OUT}"
 
-# The step-6 configs now point path_out at rec/pass1, which is empty. step7
-# reads the checkpoint from cfg.path_out, so point a throwaway copy back at
-# rec/nopos, where the finished pass-1 checkpoint actually is.
-sed 's|rec/pass1|rec/nopos|' "${SCRIPT_DIR}/config_step6_bin1_pass1.conf" \
-    > "${OUT}/s7.conf"
+# step7 reads the checkpoint from cfg.path_out, and the checkpoint this check
+# wants is the PRE-CONVENTION one in rec/nopos -- a flat directory that is not
+# any run's rec/<run>/pass1. The configs now DERIVE path_out from run=/rec=
+# (see runs/README.md), so there is no literal `rec/pass1` left to substitute;
+# override the whole key in a throwaway copy instead. Set PASS1_OUT to point
+# this at some other checkpoint directory.
+#
+# Configs live in a run folder now. Pass a different run folder as $1.
+RUN_DIR="${1:-${SCRIPT_DIR}/runs/baseline}"
+SRC="${RUN_DIR}/config_step6_bin1_pass1.conf"
+[ -f "${SRC}" ] || { echo "ERROR: no such config: ${SRC}"; exit 1; }
+PASS1_OUT="${PASS1_OUT:-/eagle/APS_IRI/cekmekci/AtomiumS2_coded/rec/nopos}"
+sed "s|^path_out=.*|path_out=${PASS1_OUT}|" "${SRC}" > "${OUT}/s7.conf"
 echo "config: ${OUT}/s7.conf"
 grep -E '^path_out=' "${OUT}/s7.conf"
 

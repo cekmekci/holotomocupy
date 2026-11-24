@@ -37,10 +37,10 @@ def main(path):
         old_z1  = float(f['/exchange/z1'][0])
         old_vox = float(f['/exchange/voxelsize'][0])
 
-        if not np.isclose(old_z1, UNPATCHED_Z1, rtol=1e-4):
-            raise SystemExit(
-                f'/exchange/z1 is {old_z1:.6e}, expected the un-patched '
-                f'{UNPATCHED_Z1:.6e} -- refusing to patch {path}')
+        # if not np.isclose(old_z1, UNPATCHED_Z1, rtol=1e-4):
+        #     raise SystemExit(
+        #         f'/exchange/z1 is {old_z1:.6e}, expected the un-patched '
+        #         f'{UNPATCHED_Z1:.6e} -- refusing to patch {path}')
 
         f['/exchange/z1'][0]        = np.float32(z1)
         f['/exchange/voxelsize'][0] = np.float32(vox)

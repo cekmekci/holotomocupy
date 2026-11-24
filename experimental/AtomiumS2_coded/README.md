@@ -26,21 +26,27 @@ and produce different files, so each gets its own subfolder:
 
 ```
 /data3/cekmekci/AtomiumS2_coded/
-    nfp/             data_nfp.h5, code.npy, prb.npy       (stage 0)
-    ht/              codedHT.h5, obj_init.npy,
-                     obj_init_corrected.npy               (stages 1-5)
-    rec/pass1/       pass-1 checkpoints, bin2 and bin1     (step 6)
-    rec/refined/     pass-2 checkpoints, bin2/bin1/bin0    (step 6)
+    nfp/                  data_nfp.h5, code.npy, prb.npy   (stage 0)   SHARED
+    ht/                   codedHT.h5, obj_init.npy         (stages 1-5) SHARED
+    rec/<run>/            everything ONE run produces:
+        obj_init_corrected.npy                             (stage 5 rebuild)
+        pass1/            pass-1 checkpoints, bin2 and bin1 (step 6)
+        refined/          pass-2 checkpoints, bin2/bin1/bin0 (step 6)
 ```
 
-Mirrored on eagle for Polaris at `/eagle/APS_IRI/cekmekci/AtomiumS2_coded/`
-(same four subfolders), which is what every step-6 config's commented-out
-Polaris path pair points at.
+Mirrored on eagle for Polaris at `/eagle/APS_IRI/cekmekci/AtomiumS2_coded/`.
 
-Every config's `path` / `path_out` is one of these four folders; `code_file`
-in the step-6 and steps15 configs is the one path that crosses folders
-(it lives in `nfp/` while the rest of that config's files live in `ht/`),
-so it is always spelled out as an absolute path rather than a filename.
+`nfp/` and `ht/` are **shared inputs**: every run reads them and no run writes
+to them. Everything a run produces lands under `rec/<run>/`, and the filenames
+inside are identical for every run -- only `<run>` differs. The run is named
+by the `run=` key at the top of each config in its folder under `runs/`; see
+[runs/README.md](runs/README.md) for the convention and for how to make a new
+run (`cp -r` plus one `sed`).
+
+Every config's `path` / `path_out` is one of these folders; `code_file` in the
+step-6 and steps15 configs is the one path that crosses folders (it lives in
+`nfp/` while the rest of that config's files live in `ht/`), so it is always
+spelled out as an absolute path rather than a filename.
 
 ---
 
@@ -142,160 +148,174 @@ leaves no replicated band to produce it.
 
 ## Run
 
-Two machines. Stages 0-3 (raw conversion, flat correction, shift finding)
-need `/data3` and only run on tomo5. Stage 5 (Paganin+FBP) can run either
-there, right after stages 1-3, or rerun later directly on Polaris/eagle --
-see "Polaris, step by step" below for the standalone rebuild script. Step 6
-on can run either locally on tomo5 (small/coarse checks) or, for the real
-job, on Polaris.
+Two machines, five phases. `nfp/` and `ht/` are SHARED inputs built once on
+tomo5 (Phases 0-2); everything after that is a run under `runs/`, isolated by
+its `run=` key (see [runs/README.md](runs/README.md)).
 
-### tomo5, once per dataset
+### Phase 0 -- check the raw inputs exist
+
+```bash
+ls -d /data3/vnikitin/ca/SiemensLH/code2um_nfp18x18_01                       # NFP raw scan
+ls -d /data3/vnikitin/ca/raw/AtomiumS2_codedht_random_007nm                  # HT raw scan
+ls -l  /data3/vnikitin/ca/raw/AtomiumS2_HT_007nm_/correct_correct3D.txt
+h5ls /data3/cekmekci/AtomiumS2_coded/nfp/data_nfp.h5/exchange                # pdata, pref, shifts, z1, voxelsize
+```
+
+**The NFP raw scan (`code2um_nfp18x18_01`) no longer exists on disk.** If
+`data_nfp.h5` is missing, it cannot be rebuilt from stage 0a -- restore it
+from backup instead of regenerating it. It already carries a geometry patch
+(`patch_nfp_geometry.py`); a restored copy is correct, a freshly-converted one
+would not be. If `data_nfp.h5` is present with `pdata`/`pref`/`shifts` already
+in it, stage 0b is done and Phase 1 skips straight to the `step0.py` call.
+
+### Phase 1 -- tomo5, build the shared inputs
 
 ```bash
 cd experimental/AtomiumS2_coded
-jupyter lab                       # step0a, step0b          -> data_nfp.h5
+
+jupyter lab                       # step0a, step0b, ONLY if data_nfp.h5 needs rebuilding -> data_nfp.h5
 
 # --mca opal_common_ucx_opal_mem_hooks 1 is on every mpirun below: UCX warns
 # "unable to handle VM_UNMAP event ... may cause performance degradation or
-# data corruption" on tomo5 otherwise, on every run. run.sh already bakes
-# this in; the two bare mpirun calls below need it spelled out.
-#
-# If mpirun still fails with "prterun-exec-failed", tomo5's .bashrc-loaded
-# nvhpc module is leaking OPAL_PREFIX into the conda env's own Open MPI --
-# load hpcx explicitly first:
+# data corruption" on tomo5 otherwise. If mpirun fails with
+# "prterun-exec-failed", tomo5's .bashrc-loaded nvhpc module is leaking
+# OPAL_PREFIX into the conda env's own Open MPI -- load hpcx explicitly first:
 #   export NVHPCSDK_HOME=/local/nvidia/hpc_sdk/Linux_x86_64/26.1
 #   . ${NVHPCSDK_HOME}/comm_libs/13.1/hpcx/latest/hpcx-init.sh
 #   hpcx_load
+
 mpirun --mca opal_common_ucx_opal_mem_hooks 1 -np 4 ./set_affinity_gpu.sh python step0.py config_step0.conf
-                                  #                         -> code.npy, prb.npy
+                                  #                         -> nfp/code.npy, nfp/prb.npy
 
-jupyter lab                       # step1, step2            -> codedHT.h5
-                                  # step3                   -> shifts_cor, shifts_code
-                                  # step5                   -> obj_init.npy
-# -- or, instead of the four notebooks above (first time only -- set
-# start_step=1 in config_steps15.conf; it is committed as 5, see "Configs") --
-mpirun --mca opal_common_ucx_opal_mem_hooks 1 -np 4 python steps15.py config_steps15.conf
-                                  #                         -> codedHT.h5, obj_init.npy
+# FROM SCRATCH: config_steps15.conf is committed with start_step=5 (stages
+# 1-3 already done). Run all of it once:
+sed -i 's/^start_step=.*/start_step=1          # FROM SCRATCH/' config_steps15.conf
+mpirun --mca opal_common_ucx_opal_mem_hooks 1 -np 4 ./set_affinity_gpu.sh python steps15.py config_steps15.conf
+                                  #                         -> ht/codedHT.h5, ht/obj_init.npy
+# set_affinity_gpu.sh matters here as much as GPU pinning: it also sets
+# OMP_NUM_THREADS=4. Without it every rank's NumPy/SciPy calls default to
+# all 32 cores, so 4 MPI ranks 4x-oversubscribe the machine and every
+# thread-using op (astype, where, the dezinger loop in stage 2) fights the
+# other 3 ranks for the same cores -- this is why an MPI run can come out
+# SLOWER than the single-process notebook doing the same math.
+sed -i 's/^start_step=.*/start_step=5/' config_steps15.conf   # restore, so a rerun doesn't redo 1-3
+```
 
-python preflight.py config_step6_bin2_pass1.conf   # check inputs, seconds
-NP=4 ./run.sh config_step6_bin2_pass1              # optional, the coarse pass-1 rung locally
+Check before moving on, not just at the end:
+
+| after | check | good looks like |
+|---|---|---|
+| stage 0 | `step0_sanity.ipynb` | predicted vs measured `pref0`, difference AND ratio |
+| stage 0 | `nfp_sweep/to_tiff.py` on `code.npy` | `max\|code\|` <= 1 (was 1.79 before `clip_passive`) |
+| stage 3 | `h5ls codedHT.h5/exchange` | `shifts_cor`, `shifts_code`, 7200 rows each |
+| stage 5 | `python visualize_paganin.py /data3/.../ht/obj_init.npy` | mmap quick-look, no rim blob on the rotation axis |
+
+```bash
+python preflight.py runs/baseline/config_step6_bin2_pass1.conf   # check inputs, seconds
+NP=4 ./run.sh runs/baseline/config_step6_bin2_pass1              # optional, the coarse pass-1 rung locally
 ```
 
 That last line is the ENTIRE step 6 + step 7 ladder you can also run right
-here instead of Polaris -- just repeat it for each config in turn, same
-order as the Polaris section below (`run.sh` is `step6.py` under `mpirun`,
-one config per call; `step7.py` runs directly with `python`). Reasonable to
-do for bin 2 on a small/cropped dataset; not reasonable for the full ladder
-at bin 0, which is what Polaris is for.
+here instead of Polaris -- repeat per config, same order as Phase 4
+(`run.sh` is `step6.py` under `mpirun`; `step7.py` runs with plain `python`).
+Reasonable for bin 2 on a small/cropped dataset, not for the full ladder at
+bin 0.
 
-**An even faster rehearsal: the toy `bin4`/`bin3` ladder, `tomo5_test/`.**
-Even bin 2 takes real time against the full dataset. `tomo5_test/`'s
-`config_step6_bin{4,3}{,_pass1}.conf` run the same two-pass mechanism
-(checkpoint handoff, position freezing, step 7, pass 2 picking up the
-correction) at a much coarser grid (`n=128` then `256`) and on only 400 of
-the 7200 angles (`stride=18`), in low single-digit minutes. `tomo5_run.sh`
-runs the whole thing. Output goes to its own `rec/test_pass1` /
-`rec/test_refined` tree, separate from the real `rec/pass1` / `rec/refined`,
-so the two can never collide. Not scientifically meaningful (16x/8x binning,
-5% of the angles) -- it's a mechanism check, not a reconstruction.
-`polaris_test/`'s `polaris_test_run.sh` is the same toy ladder, run through
-the actual Polaris job mechanics (PBS, mpiexec, the GPU healthcheck) instead
-of locally -- see its own header for the full stage list, which now
-includes a toy REBUILD THE SEED step mirroring the real one.
-
-### Transfer, tomo5 -> Polaris
+### Phase 2 -- transfer, tomo5 -> Polaris
 
 Code goes up with `../../sync_polaris.sh` (rsync mirror, `-n` first). Data
-goes up with Globus. Step 6 needs three files, from TWO different folders
-(see "Directory layout" above).
+goes up with Globus. The Polaris job needs four files, from TWO folders:
 
-| file | from | size |
-|---|---|---|
-| `codedHT.h5` | `ht/` | 170 GB |
-| `obj_init.npy` | `ht/` | 134 GB |
-| `code.npy` | `nfp/` | 513 MB |
+| file | from | size | needed by |
+|---|---|---|---|
+| `codedHT.h5` | `ht/` | 170 GB | step 6, step 7, stage-5 rebuild |
+| `obj_init.npy` | `ht/` | 134 GB | step 6 pass 1 |
+| `code.npy` | `nfp/` | 513 MB | step 6, stage-5 rebuild |
+| `prb.npy` | `nfp/` | ~4 MB | **stage-5 rebuild only** |
 
-`data_nfp.h5` and `prb.npy` (both in `nfp/`) stay on tomo5. Step 6 never opens
-them.
+**`prb.npy` is easy to forget and the failure is late.** Step 6 does not read
+it (no `prb_file` key; `prb` comes from `codedHT.h5`), but `polaris_run.sh`'s
+REBUILD THE SEED stage runs `steps15.py` stage 5, which loads `prb_file`
+unconditionally (`steps15.py:435`). Leave it behind and the job dies after
+pass 1 and step 7 have already been paid for.
 
-Stripe BOTH output directories before the first run. Eagle defaults to one
-OST and a bin-0 checkpoint is large.
+`data_nfp.h5` stays on tomo5 -- stage 5 only opens it for a nominal `z1_code`
+(`steps15.py:397`), and `config_steps15_corrected.conf` sets `z1_code`
+explicitly, so that branch never runs.
+
+Stripe BOTH output directories before the first run on a run folder -- eagle
+defaults to one OST and a bin-0 checkpoint is large:
 
 ```bash
-lfs setstripe -c 8 -S 16M rec/refined
-lfs setstripe -c 8 -S 16M rec/pass1
+R=/eagle/APS_IRI/cekmekci/AtomiumS2_coded/rec
+mkdir -p $R/<run>/pass1 $R/<run>/refined
+lfs setstripe -c 8 -S 16M $R/<run>/pass1
+lfs setstripe -c 8 -S 16M $R/<run>/refined
 ```
 
-### Polaris, step by step
+### Phase 3 -- prove the ladder on the debug queue
 
-1. **Edit the five step-6 configs** (`config_step6_bin{2,1}_pass1.conf`,
-   `config_step6_bin{2,1,0}.conf`) -- uncomment the Polaris `path` /
-   `path_out` pair at the top of each, comment out the tomo5 pair. Nothing
-   auto-detects the machine.
+`runs/toy/` is a normal run at coarser binning (bin 4/3, 400 of 7200 angles),
+exercising all five stages in ~1 h on 2 debug-queue nodes. The failure modes
+that have actually bitten -- missing `prb.npy`, step 7 diverging -- both
+surface after pass 1, where discovering them at prod scale is expensive.
+
+```bash
+R=/eagle/APS_IRI/cekmekci/AtomiumS2_coded/rec
+mkdir -p $R/toy/pass1 $R/toy/refined
+lfs setstripe -c 8 -S 16M $R/toy/pass1
+lfs setstripe -c 8 -S 16M $R/toy/refined
+cd runs/toy
+qsub polaris_run.sh
+```
+
+See [runs/README.md](runs/README.md) for the bin-to-grid-size table and the
+two things that bite specifically at toy scale (`step7 --ntheta` must match
+the toy's own angle count, not 7200; the seed-rebuild stage costs full price
+regardless of binning).
+
+### Phase 4 -- Polaris, the real ladder
+
+1. **Pick or make the run.** Each run is a folder under `runs/`, holding its
+   six configs and its `polaris_run.sh`. `runs/baseline` is the reference
+   ladder; to make another, `cp -r` it and change the `run=` key -- see
+   [runs/README.md](runs/README.md).
 2. **ssh in and source the environment.**
    ```bash
    ssh polaris
    cd ~/holotomocupy_gpu_reduced/experimental/AtomiumS2_coded
    source ../polaris_env.sh
    ```
-3. **If `obj_init.npy` predates a stage-5 code change** (e.g. the
-   pad-to-`nobj`-before-FBP taper added 2026-11-11), regenerate it FIRST, in
-   its own job -- `polaris_run.sh` does not rebuild this file, only
-   `obj_init_corrected.npy` (step 4 below):
+3. **If `obj_init.npy` predates a stage-5 code change**, regenerate it in its
+   own job first -- `polaris_run.sh` only rebuilds `obj_init_corrected.npy`:
    ```bash
    qsub polaris_run_steps15.sh
    ```
-   Its own header explains why this is a separate script: tuning stage 5
-   (Paganin params, the taper) means rerunning it repeatedly, and bundling it
-   into the 24-node/2-hour `polaris_run.sh` would mean paying for pass 1,
-   step 7 and pass 2 on every tuning iteration. Lower its `#PBS -l select=`
-   and switch to the debug queue for cheap iteration -- this stage has no
-   toy-scale subsetting, so fewer nodes trades cost for wall-clock, not less
-   total work.
-4. **Submit the real ladder.**
+4. **Submit.** From inside the run's own folder -- configs and
+   `correct_correct3D_extra.txt` resolve relative to where `polaris_run.sh`
+   lives:
    ```bash
+   cd runs/baseline
    qsub polaris_run.sh
    qstat -u $USER
    ```
-   `polaris_run.sh` does everything from here on, as one job:
-   - `preflight.py` on EACH config right before ITS OWN rung runs, not all
-     five upfront -- a later rung's checkpoint dependency does not exist
-     until the rung before it has actually run, so checking it before the
-     ladder even starts would abort a from-scratch submission immediately.
-     Still seconds, still before anything expensive runs for that rung.
-   - `gpu_healthcheck.sh`, dropping any node whose GPUs will not take a CUDA
-     context
-   - refuses to start if `correct_correct3D_extra.txt` already exists next
-     to the configs (the re-submission guard -- see "Two-pass drift
-     refinement" below; if you are intentionally resuming pass 2 only,
-     comment out the pass-1, step-7 and rebuild `mpiexec` lines in the
-     script first)
-   - **pass 1**: `step6.py config_step6_bin2_pass1.conf`, then
-     `config_step6_bin1_pass1.conf` (positions frozen, iter 0 -> 512 -> 768)
-   - **step 7**: `step7.py` on the pass-1 bin-1 checkpoint -> writes
-     `correct_correct3D_extra.txt`
-   - **rebuild the seed**: `steps15.py config_steps15_corrected.conf`
-     (`start_step=5`) folds that correction into `pos_obj` and reruns
-     Paganin+FBP -> `obj_init_corrected.npy`, geometrically consistent with
-     the corrected positions from iteration 0 (see "Two-pass drift
-     refinement" for why patching `pos` onto the pass-1 checkpoint directly
-     does not work)
-   - **pass 2**: `step6.py config_step6_bin2.conf` -> `bin1.conf` ->
-     `bin0.conf` (iter 0 -> 512 -> 768 -> 896, refined positions)
-5. **Watch it.** `tail -f <SCRIPT_DIR>/pbs-<jobid>.out`, or just wait for
-   `qstat` to drop the job. Each stage prints `=== <name> START <date> ===`
-   so you can tell which rung it is on.
-6. **If a stage fails or is preempted**, every `mpiexec` line ends
-   `|| exit $?`, so the job stops rather than seeding the next rung from a
-   checkpoint that was never written. `ls <path_out>/checkpoints/`, set
-   `start_iter` in the config that failed to the highest `checkpoint_NNNN`
-   present, comment out the mpiexec lines for stages that already finished,
-   resubmit.
+   `polaris_run.sh` does everything from here, as one job: `preflight.py`
+   before each rung, `gpu_healthcheck.sh`, refuses to start if
+   `correct_correct3D_extra.txt` already exists (see "Two-pass drift
+   refinement"), then **pass 1** (`bin2_pass1` -> `bin1_pass1`, positions
+   frozen, iter 0 -> 256 -> 512), **step 7** (-> `correct_correct3D_extra.txt`),
+   **rebuild the seed** (`steps15.py config_steps15_corrected.conf`,
+   `start_step=5` -> `obj_init_corrected.npy`), **pass 2**
+   (`bin2` -> `bin1` -> `bin0`, iter 0 -> 256 -> 512 -> 768, refined positions).
+5. **Watch it.** `tail -f pbs-<jobid>.out`; each stage prints
+   `=== <name> START <date> ===`.
+6. **If a stage fails or is preempted**, every `mpiexec` ends `|| exit $?`.
+   `ls <path_out>/checkpoints/`, set `start_iter` to the highest
+   `checkpoint_NNNN`, comment out the finished `mpiexec` lines, resubmit.
 
-To run only part of the ladder (skip pass 1 and step 7 because
-`correct_correct3D_extra.txt` is already good, say), comment out the
-corresponding `mpiexec` lines in `polaris_run.sh` directly -- that is the
-control mechanism, there is no command-line flag.
+To skip part of the ladder (e.g. `correct_correct3D_extra.txt` is already
+good), comment out the corresponding `mpiexec` lines in `polaris_run.sh` --
+there is no command-line flag.
 
 `esrf.slurm` is the same job for ESRF. One rung per submission, picked by
 `CONFIG=` at the top. `set_affinity_gpu.sh` and `set_affinity_gpu_polaris.sh`
@@ -310,11 +330,17 @@ multi-distance folders.
 
 | file | covers | read by |
 |---|---|---|
-| `config_step0.conf` | the NFP scan, which images the mask alone | `step0a`, `step0b`, `step0.py` |
-| `config_steps15.conf` | the holotomography scan, stages 1-5 (`start_step=5` as committed -- see "Pipeline" above) | `step1`, `step2`, `step3`, `step5`, `steps15.py` |
-| `config_steps15_corrected.conf` | stage 5 only, rebuilding the seed with step 7's correction in `pos_obj` -- see "Two-pass drift refinement" | `steps15.py`, `start_step=5` |
-| `config_step6_bin2_pass1.conf`, `config_step6_bin1_pass1.conf` | the reconstruction, pass 1 (positions frozen) | `step6.py`, `step7.py` |
-| `config_step6_bin2.conf`, `config_step6_bin1.conf`, `config_step6_bin0.conf` | the reconstruction, pass 2 (refined) | `step6.py` |
+The first two sit at the top level because they build the **shared** inputs
+every run reads. The rest belong to one run and live in that run's folder
+under `runs/`.
+
+| file | covers | read by |
+|---|---|---|
+| `config_step0.conf` | the NFP scan, which images the mask alone -- builds `nfp/`, SHARED | `step0a`, `step0b`, `step0.py` |
+| `config_steps15.conf` | the holotomography scan, stages 1-5 (`start_step=5` as committed -- see "Pipeline" above) -- builds `ht/`, SHARED | `step1`, `step2`, `step3`, `step5`, `steps15.py` |
+| `runs/<run>/config_steps15_corrected.conf` | stage 5 only, rebuilding the seed with step 7's correction in `pos_obj` -- see "Two-pass drift refinement" | `steps15.py`, `start_step=5` |
+| `runs/<run>/config_step6_bin2_pass1.conf`, `..._bin1_pass1.conf` | the reconstruction, pass 1 (positions frozen) | `step6.py`, `step7.py` |
+| `runs/<run>/config_step6_bin2.conf`, `..._bin1.conf`, `..._bin0.conf` | the reconstruction, pass 2 (refined) | `step6.py` |
 
 The notebooks pull their paths through `parse_args_coded_step0` and
 `parse_args_coded_steps15`, so no path is written twice.
@@ -330,9 +356,10 @@ to the tuned `-17.75e-3` that step 6 uses if you want the seed built on the
 same geometry the solver assumes. Structural constants like dark and flat
 counts, GPU counts and chunk sizes stay in the notebooks.
 
-All five step-6 configs each carry both machines' `path` / `path_out` pairs
-in a block at the top (the `_pass1` configs' `path_out` is `rec/pass1`, the
-pass-2 configs' is `rec/refined` -- see "Directory layout" above).
+All six configs in a run folder carry the same `run=` / `rec=` pair at the
+top, and derive every run-specific path from it: the `_pass1` configs'
+`path_out` is `rec/<run>/pass1`, the pass-2 configs' is `rec/<run>/refined`
+-- see "Directory layout" above and [runs/README.md](runs/README.md).
 
 ```
 n = nz = 2048 >> bin     nobj = nzobj = n + n//4     ncode = 8192 >> bin
@@ -350,8 +377,8 @@ n = nz = 2048 >> bin     nobj = nzobj = n + n//4     ncode = 8192 >> bin
 
 **Each PASS shares one `path_out`, not the whole ladder.** Pass 1's bin 2
 starts fresh and reads `obj_init.npy`; pass 2's bin 2 starts fresh and reads
-`obj_init_corrected.npy` instead, into a SEPARATE `path_out` (`rec/pass1` vs
-`rec/refined`). Within each pass, the finer rungs resume from the checkpoint
+`obj_init_corrected.npy` instead, into a SEPARATE `path_out` (`rec/<run>/pass1` vs
+`rec/<run>/refined`). Within each pass, the finer rungs resume from the checkpoint
 above, which `CodedReader.read_checkpoint` upsamples x2 -- object, probe,
 aperture and both position sets.
 
@@ -442,8 +469,8 @@ starts from `shifts_cor` without either addition.
 `rho`'s `pos` entry is 0 (so the position gradient is identically zero and
 nothing drifts further), `obj_init_file` points at the original
 `obj_init.npy` rather than the rebuilt `obj_init_corrected.npy`, there is no
-`correct3d_extra_file` key, and `path_out` is a separate tree (`rec/pass1`
-vs `rec/refined`) so pass 2 cannot overwrite the volume step 7 read.
+`correct3d_extra_file` key, and `path_out` is a separate tree (`rec/<run>/pass1`
+vs `rec/<run>/refined`) so pass 2 cannot overwrite the volume step 7 read.
 Pass 1 stops at bin 1 -- no `_pass1` bin-0 config -- since step 7's search
 grid only needs to be fine enough to resolve the drift curve, not the final
 reconstruction.
@@ -467,7 +494,7 @@ Run `step7.py` exactly as `AtomiumS1_HT_RD300/step7.py`, pointed at the
 pass-1 bin-1 config so it finds the right checkpoint:
 
 ```bash
-python step7.py config_step6_bin1_pass1.conf --iter 768 --bin 0 --ntheta 7200
+python step7.py config_step6_bin1_pass1.conf --iter 512 --bin 0 --ntheta 7200
 ```
 
 `polaris_run.sh` runs the whole ladder -- pass 1, step 7, rebuild the seed,
@@ -528,8 +555,8 @@ new code, not ported from the fork, so they are the least exercised.
 `preflight.py` reads the real `codedHT.h5`, `code.npy` and `obj_init.npy` and
 passes.
 
-**The full real-data ladder has not been run end to end yet.** `polaris_test/`
-(the toy `bin4`/`bin3` ladder, run through actual Polaris job mechanics) has
+**The full real-data ladder has not been run end to end yet.** A toy run
+(the `bin4`/`bin3` ladder, run through actual Polaris job mechanics) has
 validated pass 1 + step 7's own mechanics -- env, configs, `estimate_rho`,
 `lam_laplacian`, preflight, invocation order all work. Step 7's divergence
 guard correctly fired at that toy scale (400 of 7200 angles informing the

@@ -71,9 +71,14 @@ OUT="${HOME}/s7_trim"
 mkdir -p "${OUT}"
 
 # No sed fixup needed, unlike s7_sign_check.sh: config_step6_bin1_pass1.conf
-# already points path_out at rec/pass1, which is where the finished pass-1
-# checkpoint actually is.
-CONF="${SCRIPT_DIR}/config_step6_bin1_pass1.conf"
+# already points path_out at its own run's rec/<run>/pass1, which is where
+# that run's finished pass-1 checkpoint actually is.
+#
+# Configs live in a run folder now -- one folder = one run, see
+# runs/README.md. Pass a different run folder as $1 to check that run.
+RUN_DIR="${1:-${SCRIPT_DIR}/runs/baseline}"
+CONF="${RUN_DIR}/config_step6_bin1_pass1.conf"
+[ -f "${CONF}" ] || { echo "ERROR: no such config: ${CONF}"; exit 1; }
 echo "config: ${CONF}"
 grep -E '^path_out=' "${CONF}"
 

@@ -6,6 +6,7 @@
 .. automodule:: holotomocupy.rec_mpi
 .. automodule:: holotomocupy.rec_nfp_mpi
 .. automodule:: holotomocupy.rec_coded_mpi
+.. automodule:: holotomocupy.rec_holo_coded_mpi
 ```
 
 ## Operators
@@ -34,6 +35,7 @@
 .. automodule:: holotomocupy.reader
 .. automodule:: holotomocupy.writer
 .. automodule:: holotomocupy.reader_coded
+.. automodule:: holotomocupy.reader_holo_coded
 .. automodule:: holotomocupy.esrf_meta
 ```
 

@@ -10,12 +10,14 @@ model the solver inverts, and the truth is kept so every number can be checked.
 | step 0 | [`01_nfp_probe.ipynb`](01_nfp_probe.ipynb) | [`01_nfp_probe.py`](01_nfp_probe.py) | probe retrieval by near-field ptychography from a Siemens star, `npos` scan positions |
 | step 6 | [`02_holotomography.ipynb`](02_holotomography.ipynb) | [`02_holotomography.py`](02_holotomography.py) | holotomography of a 3-D phantom, 4 distances |
 | step 6 (coded) | [`03_coded_holotomography.ipynb`](03_coded_holotomography.ipynb) | [`03_coded_holotomography.py`](03_coded_holotomography.py) | the same phantom through a coded aperture, **1** distance |
+| 2-D (coded) | [`04_coded_holography.ipynb`](04_coded_holography.ipynb) | [`04_coded_holography.py`](04_coded_holography.py) | a Siemens-star phase object through a coded aperture, **1** distance, **no tomography** |
 
 ```bash
 jupyter lab                            # then open either notebook
 ./run.sh 01_nfp_probe.py               # 1 GPU
 ./run.sh 02_holotomography.py          # 1 GPU
 ./run.sh 03_coded_holotomography.py    # 1 GPU
+./run.sh 04_coded_holography.py        # 1 GPU
 ./run_mpi.sh 4 02_holotomography.py    # 4 GPUs
 ./run.sh 02_holotomography.py --n 256 --ntheta 360 --niter 257
 ```
@@ -51,6 +53,8 @@ the mask in place of the sample — so the honest starting point there is a
 | `02_holotomography.py` | Quadro RTX 8000 | `fft` | **crashes** at iter ~26, see below |
 | `03_coded_holotomography.py` (n 128, 180 angles, 1 distance, code 256², 257 iters) | A100-40GB | `fft` | object corr **0.842**, positions 0.256 → **0.049 px**, code positions 0.262 → **0.028 px** |
 | `03_coded_holotomography.py --freeze-code` | A100-40GB | `fft` | object corr **0.875**, positions 0.256 → **0.047 px**, code positions 0.262 → **0.017 px** |
+| `04_coded_holography.py --freeze-code` (n 128, 64 frames, 1 distance, code 192², 257 iters) | A100-40GB | `fft` | object corr **0.999**, positions 0.252 → **0.020 px**, code positions 0.260 → **0.0001 px** |
+| `04_coded_holography.py` scaling, 64 frames, 129 iters, code refined | A100-40GB | `fft` | n 256 **0.9915** / 11 s / 1.7 GB · n 512 **0.9997** / 29 s / 5.0 GB · n 1024 **1.0000** / 109 s / 9.2 GB · n 2048 **1.0000** / 442 s / 18.3 GB. Noiseless, so these are an inverse crime — they bound the engine, not the method. |
 
 ### `shift_type`: `fft` vs `cubic`
 

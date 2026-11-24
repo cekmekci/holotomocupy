@@ -96,11 +96,17 @@ class RecNFP:
         # pixels of the grid the data is on -- for NFP that is the unbinned
         # detector, so no bin factor enters.  Absent or 0 -> psf_w is None and
         # _blur is the identity, which is the pre-PSF behaviour exactly.
+        self.clip_passive = bool(getattr(args, 'clip_passive', False))
+        self._clip_frac = 0.0
         self.psf_sigma, self.psf_w = psf_taps(getattr(args, 'psf_sigma', 0.0))
         if self.psf_w is not None and self.rank == 0:
             logger.info(
                 f"PSF: one Gaussian on the detector intensity, "
                 f"sigma={self.psf_sigma:g} det.px ({self.psf_w.size} taps)")
+        if self.clip_passive and self.rank == 0:
+            logger.info("clip_passive ON: holding |t| <= 1 after every step "
+                        "(Im(proj) >= 0). BH has no line search, so watch the "
+                        "error trace for non-monotonicity.")
 
         # Data-misfit model, 'intensity' (default) or 'amplitude'; orthogonal to
         # psf_sigma, both blur the model intensity with the same K.  See the F0
@@ -353,6 +359,44 @@ class RecNFP:
         """var ← var + alpha·eta for every variable."""
         for v in self._var_names:
             self.linear_batch(vars[v], etas[v], 1, alpha)
+        self.project_passive(vars)
+
+    def project_passive(self, vars):
+        """Optional: hold the object to |transmission| <= 1.  OFF by default.
+
+        `proj` is the complex LOG of the transmission -- step0 saves
+        `exp(1j*proj)` -- so
+
+            |t| = |exp(1j*proj)| = exp(-Im(proj))
+
+        and |t| <= 1 is exactly Im(proj) >= 0.  A one-sided bound on the
+        imaginary part, which is the mildest possible form for a constraint:
+        no coupling between pixels, nothing nonlinear.
+
+        WHY IT EXISTS.  A passive absorber cannot have |t| > 1.  The AtomiumS2
+        aperture violates this badly -- 1.79 on the psf_sigma=0 production
+        reconstruction, 2.29 when a PSF is modelled, because adding a blur
+        turns step0 into an unconstrained deconvolution that sharpens without
+        limit.  Clamping removes that runaway at source.
+
+        WHAT TO WATCH.  BH takes an exact quadratic step, alpha = top/bottom,
+        with NO line search and no check that the objective fell.  Projecting
+        afterwards therefore has no safeguard: if it pushes the iterate
+        somewhere the quadratic model did not predict, nothing backtracks.
+        Watch the error trace for non-monotonicity, and the `non-convex alpha
+        denominator` warnings for an increase.  A penalty term built like
+        LaplacianTerm, which the quadratic model would actually see, is the
+        principled version of this; it does not exist yet.
+
+        Default False so every existing run reproduces bit-for-bit.
+        """
+        if not getattr(self, 'clip_passive', False):
+            return
+        p = vars['proj']
+        neg = p.imag < 0
+        if self.rank == 0:
+            self._clip_frac = float(neg.mean())
+        p.imag = cp.maximum(p.imag, 0)
 
     def log_iter(self, vars, i, writer):
         """Error + checkpoint hooks for this iter."""
@@ -864,6 +908,36 @@ class RecNFP:
         _min(self, out, pos, self.data, prb, proj)
         return float(self.allreduce(np.array([out[0].get()], dtype='float32'))[0])
 
+    def _write_preview_tiffs(self, vars, i):
+        """Both halves of both variables, every checkpoint.
+
+        `proj` is the complex LOG of the aperture -- step0 saves `exp(1j*proj)`
+        -- so the two halves are different physical quantities and only saving
+        one hides half the state:
+
+            proj_re  = the aperture PHASE
+            proj_im  = its attenuation, since |code| = exp(-proj_im)
+
+        proj_im is the one worth watching. `proj_im < 0` means `|code| > 1`,
+        which a passive absorber cannot do, so it flags a non-physical solve
+        directly. That is how the psf_sigma trials were caught running away
+        (|code| reached 2.29 at sigma=1.4) -- and it was invisible at the time
+        because only proj_re was written.
+
+        Was `proj{i}.tiff` (proj.real) and `prb{i}.tiff` (the probe phase).
+        Renamed to match writer.py's obj_re / obj_im / prb_abs / prb_phase.
+        Nothing reads these by name; sync_tiff.sh globs the directory.
+        """
+        tiff_dir = os.path.join(self.path_out, 'checkpoints_tiff')
+        write_tiff(vars['proj'].real,     f'{tiff_dir}/proj_re{i:04}')
+        write_tiff(vars['proj'].imag,     f'{tiff_dir}/proj_im{i:04}')
+        write_tiff(cp.abs(vars['prb']),   f'{tiff_dir}/prb_abs{i:04}')
+        write_tiff(cp.angle(vars['prb']), f'{tiff_dir}/prb_phase{i:04}')
+        mx = float(cp.exp(-vars['proj'].imag.min()))
+        logger.info(f"iter {i}: proj_re/proj_im/prb_abs/prb_phase -> {tiff_dir}"
+                    + (f"   WARNING max|code| = {mx:.3f} > 1, non-physical"
+                       if mx > 1.01 else f"   max|code| = {mx:.3f}"))
+
     def vis_debug(self, vars, i, writer=None):
         if not (i % self.checkpoint_step == 0 and self.checkpoint_step != -1):
             return
@@ -871,17 +945,10 @@ class RecNFP:
             if i > self.start_iter:
                 writer.write_checkpoint(vars, i)
             if self.rank == 0 and hasattr(self, 'path_out') and self.path_out:
-                tiff_dir  = os.path.join(self.path_out, 'checkpoints_tiff')
-                tiff_path = os.path.join(tiff_dir, f'checkpoint_{i:04}_proj_re.tiff')
-                tifffile.imwrite(tiff_path, cp.asnumpy(vars['proj'].real))
-                logger.info(f"NFP: proj_re TIFF saved → {tiff_path}")
+                self._write_preview_tiffs(vars, i)
         elif self.rank == 0:
             if hasattr(self, 'path_out'):
-                tiff_dir = os.path.join(self.path_out, 'checkpoints_tiff')
-                logger.info(f"Saving iter {i}: proj, prb to {tiff_dir}")
-                write_tiff(vars['proj'].real,     f'{tiff_dir}/proj{i:04}')
-                write_tiff(cp.angle(vars['prb']), f'{tiff_dir}/prb{i:04}')
-                np.save(f'{tiff_dir}/prb{i:04}.npy', vars['prb'].get())
+                self._write_preview_tiffs(vars, i)
             else:
                 mshow(vars['proj'].real, True)
                 mshow_polar(vars['prb'], True)

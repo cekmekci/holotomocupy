@@ -629,6 +629,86 @@ def parse_args_coded(config_file):
     return args
 
 
+def parse_args_holo_coded(config_file):
+    """Config for the 2-D coded-aperture holography reconstruction.
+
+    `parse_args_coded` minus every tomography key -- `ntheta`/`start_theta`/
+    `stride`, `rot_axis_offset`, `correct3d_extra_file`, `tomo_upsample`,
+    `mask`, `lam_laplacian` -- plus `nframes`.  `rho` keeps the five-entry
+    `[obj, prb, pos, code, pos_code]` order even though there is no volume.
+    See rec_holo_coded_mpi.RecHoloCoded.
+    """
+    cfg = _load(config_file)
+    args = SimpleNamespace()
+
+    args.path_out = cfg.path("path_out")
+    _path         = cfg.path("path", fallback=args.path_out)
+    args.in_file  = os.path.join(_path, cfg.str("in_file"))
+
+    def _data_rel(p):
+        return p if os.path.isabs(p) else os.path.join(_path, p)
+
+    args.code_file = _data_rel(cfg.str("code_file"))
+    _init          = cfg.opt_str("obj_init_file")
+    args.obj_init_file = _data_rel(_init) if _init else None
+
+    # Number of scan frames. The engine stores this as `ntheta` because
+    # Chunking and MPIClass name the scan axis that way; there are no
+    # projection angles here.
+    args.nframes = cfg.int("nframes")
+    args.ntheta  = args.nframes
+
+    args.nz      = cfg.int("nz")
+    args.n       = cfg.int("n")
+    args.nzobj   = cfg.int("nzobj")
+    args.nobj    = cfg.int("nobj")
+    args.ncode   = cfg.int("ncode")
+    args.bin     = cfg.int("bin")
+
+    # Source-to-code distance. NOT read from the h5: the distance that
+    # actually focuses the aperture differs from the nominal one recorded at
+    # the beamline, so it is a tuned parameter.
+    args.z1_code = cfg.float("z1_code")
+    # Each frame shifts a window of the code plane rather than the whole of
+    # it; the pad is code_pad_frac*n per side. Must be > 0.
+    args.code_pad_frac = cfg.float("code_pad_frac", fallback=0.125)
+
+    args.psf_sigma = cfg.float("psf_sigma", fallback=0.0)  # binned detector px
+    args.model     = _parse_model(cfg)
+
+    # [obj, prb, pos, code, pos_code]
+    args.rho = cfg.list("rho", float)
+    args.estimate_rho         = cfg.bool("estimate_rho",       fallback=False)
+    args.rho_estimate_niter   = cfg.int ("rho_estimate_niter", fallback=16)
+    args.rho_trial_error_step = cfg.int ("rho_trial_error_step", fallback=-1)
+
+    args.freeze_code     = cfg.bool("freeze_code",     fallback=False)
+    args.freeze_pos_code = cfg.bool("freeze_pos_code", fallback=False)
+
+    args.mask_oob        = cfg.bool ("mask_oob",        fallback=True)
+    args.mask_oob_margin = cfg.float("mask_oob_margin", fallback=2.0)
+
+    args.fused_hessian       = cfg.bool("fused_hessian",       fallback=True)
+    args.check_fused_hessian = cfg.bool("check_fused_hessian", fallback=False)
+    args.check_approx        = cfg.bool("check_approx",        fallback=False)
+
+    args.niter  = cfg.int("niter")
+    # Frames per GPU pass. At production n the shared-object tile
+    # (nchunk * nzobj * nobj * 8 bytes, three chains live in the Hessian) is
+    # the dominant temporary, so this is the first knob to lower on OOM.
+    args.nchunk = cfg.int("nchunk")
+    args.checkpoint_step = cfg.int("checkpoint_step")
+    args.error_step      = cfg.int("error_step")
+    args.debug_step      = cfg.int("debug_step", fallback=-1)
+    args.start_iter      = cfg.int("start_iter", fallback=0)
+
+    args.shift_type = cfg.str("shift_type", fallback="fft")
+    args.log_level  = cfg.str("log_level",  fallback="WARNING")
+    args.energy     = cfg.float("energy", fallback=None)
+
+    return args
+
+
 def parse_args_coded_step0(config_file):
     """Config for the coded-aperture NFP calibration (step0.py of that pipeline).
 
@@ -652,11 +732,34 @@ def parse_args_coded_step0(config_file):
     # Raw NFP scan root, read by the step0a notebook rather than by step0.py.
     args.raw_nfp = cfg.opt_str("raw_nfp")
 
+    # Acquisition geometry. OPTIONAL and all defaulting to None, because
+    # step0.py itself reads these back out of the converted HDF5 -- the
+    # ESRF configs omit them entirely and are unaffected. They exist so the
+    # step0a CONVERT notebook, which is what writes them into that HDF5, can
+    # take them from the config instead of carrying a second copy that drifts
+    # out of step with it.
+    args.energy_kev              = cfg.float("energy",                  fallback=None)
+    args.z1_m                    = cfg.float("z1",                      fallback=None)
+    args.focusdetectordistance_m = cfg.float("focusdetectordistance",   fallback=None)
+    args.detector_pixelsize_m    = cfg.float("detector_pixelsize",      fallback=None)
+    # Binning applied by step0a on the way in. n/nz in this file are the
+    # BINNED grid, so the centred crop is (nz << bin, n << bin).
+    args.bin                     = cfg.int("bin",                       fallback=0)
+    # Outlier removal in step0a: radius in px and a relative threshold.
+    args.dezinger_radius         = cfg.int("dezinger_radius",           fallback=0)
+    args.dezinger_threshold      = cfg.float("dezinger_threshold",      fallback=0.8)
+
     args.n      = cfg.int("n")
+    # Detector ROWS. Optional, defaulting to `n`, so every existing square
+    # config is unchanged; a rectangular detector (DanMAX is 2592 x 4608)
+    # sets it explicitly. RecNFP already carries nz and n separately.
+    args.nz     = cfg.int("nz", fallback=None) or args.n
     # The aperture plane. Bigger than the detector because the mask is
     # scanned: npsi must clear n + 2*max|shift| + a margin, and the FOV
     # filter in step0.py drops any position that would reach past it.
     args.npsi   = cfg.int("npsi")
+    # Aperture-plane ROWS, same rule as nz.
+    args.npsiz  = cfg.int("npsiz", fallback=None) or args.npsi
     args.nchunk = cfg.int("nchunk")
     # Positions whose patch would leave the aperture plane are dropped; this
     # is the slack, in detector px, held back from the edge.
@@ -689,6 +792,10 @@ def parse_args_coded_step0(config_file):
 
     args.shift_type = cfg.str("shift_type", fallback="fft")
     args.log_level  = cfg.str("log_level",  fallback="INFO")
+
+    # Hold the aperture to |t| <= 1, which a passive absorber cannot exceed.
+    # OFF by default: every existing run must reproduce unchanged.
+    args.clip_passive = cfg.bool("clip_passive", fallback=False)
 
     return args
 

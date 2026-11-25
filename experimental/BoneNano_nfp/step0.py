@@ -84,6 +84,11 @@ with h5py.File(args.in_file, 'r') as fid:
     voxelsize             = float(fid['/exchange/voxelsize'][0])
     npos_all, nz_file, n_file = fid['/exchange/pdata'].shape[:3]
 
+# Geometry is stored UNBINNED, as everywhere else in this package; scale it
+# here the same way CodedReader.__init__ does. The preprocessing notebooks
+# crop (and may bin) the frames, and this is the one place that has to know.
+detector_pixelsize *= 2 ** args.bin
+
 if (nz_file, n_file) != (args.nz, args.n):
     raise SystemExit(f'{args.in_file} holds [{nz_file}, {n_file}] px frames, '
                      f'config says nz={args.nz} n={args.n}')

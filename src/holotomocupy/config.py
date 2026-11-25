@@ -581,6 +581,27 @@ def parse_args_coded(config_file):
     # actually focuses the aperture differs from the nominal one recorded at
     # the beamline, so it is a tuned parameter.
     args.z1_code = cfg.float("z1_code")
+    # Optional: focus->sample distance, focus->detector distance, and the
+    # unbinned detector pixel size. RecCoded/CodedReader get all three from
+    # the HDF5 at step-6 time, not from here, so these stay None on the ESRF
+    # configs that never set them. BoneNano's step1/step2/step3 notebooks
+    # need them BEFORE that HDF5 exists -- step1 is what writes
+    # /exchange/{z1,focusdetectordistance,detector_pixelsize} in the first
+    # place -- so they read all three off config_step6.conf directly. Without
+    # these lines CFG.z1 etc. raised AttributeError on the first config cell
+    # of all three notebooks.
+    args.z1                      = cfg.float("z1", fallback=None)
+    args.focusdetectordistance   = cfg.float("focusdetectordistance", fallback=None)
+    args.detector_pixelsize      = cfg.float("detector_pixelsize", fallback=None)
+    # Optional: the NATIVE (unbinned) crop size steps 1-3 convert and register
+    # at, for folders whose preprocessing notebooks share this config file
+    # with step 6. Deliberately SEPARATE from nz/n above, which are the
+    # BINNED solve-time grid CodedReader produces -- steps 1-5 never bin
+    # anything (that is step 6/CodedReader's job alone, same as
+    # AtomiumS2_coded, which only ever stores and registers at the one native
+    # resolution it uses throughout). None on configs that never set them.
+    args.crop_nz = cfg.int("crop_nz", fallback=None)
+    args.crop_n  = cfg.int("crop_n",  fallback=None)
     # Each projection shifts a window of the code plane rather than the whole
     # of it. The pad is code_pad_frac*n per side, rounded up to a
     # cuFFT-friendly window size. Accuracy improves as ~1/sqrt(pad); see
@@ -665,10 +686,26 @@ def parse_args_holo_coded(config_file):
     args.ncode   = cfg.int("ncode")
     args.bin     = cfg.int("bin")
 
+    # Optional: the NATIVE (unbinned) crop size steps 1a-1c convert and
+    # register at, for folders whose preprocessing notebooks share this
+    # config file with the solve -- same purpose, same fallback=None default,
+    # as the identical pair on parse_args_coded. nz/n above are the BINNED
+    # solve-time grid; steps 1a-1c never bin (that is the reader's job alone).
+    args.crop_nz = cfg.int("crop_nz", fallback=None)
+    args.crop_n  = cfg.int("crop_n",  fallback=None)
+
     # Source-to-code distance. NOT read from the h5: the distance that
     # actually focuses the aperture differs from the nominal one recorded at
     # the beamline, so it is a tuned parameter.
     args.z1_code = cfg.float("z1_code")
+    # Optional: focus->sample distance, focus->detector distance, and the
+    # unbinned detector pixel size. HoloCodedReader gets all three from the
+    # HDF5 at solve time, not from here, so these stay None unless a folder's
+    # own preprocessing notebooks need them before that HDF5 exists (same
+    # reasoning, same fields, as parse_args_coded's identical trio).
+    args.z1                    = cfg.float("z1", fallback=None)
+    args.focusdetectordistance = cfg.float("focusdetectordistance", fallback=None)
+    args.detector_pixelsize    = cfg.float("detector_pixelsize", fallback=None)
     # Each frame shifts a window of the code plane rather than the whole of
     # it; the pad is code_pad_frac*n per side. Must be > 0.
     args.code_pad_frac = cfg.float("code_pad_frac", fallback=0.125)

@@ -425,13 +425,39 @@ class HoloCodedWriter:
                                 - np.asarray(pos_code_init), i, 'pos_code')
 
     def _write_tiff(self, obj, code, i):
-        """Object phase and aperture phase, for a glance without opening h5."""
+        """Object phase and aperture phase, for a glance without opening h5.
+
+        `obj` is the EXPONENT, not a transmission function: `RecHoloCoded.F4`
+        computes `exp(1j * obj)`, so
+
+            exp(1j*obj) = exp(1j*obj.real) * exp(-obj.imag)
+                          ^ phase            ^ attenuation
+
+        and the phase is `obj.real` -- the same quantity `writer.py` writes as
+        `obj_re`, `rec_nfp_mpi.py` writes as `proj_re`, and
+        `demo/04_coded_holography.py` scores against.
+
+        It is NOT `np.angle(obj)`, which this used to write: the complex
+        argument of the exponent mixes phase and absorption into something
+        with no physical meaning. Measured on a real reconstruction
+        (MicroCT scan 94, checkpoint 0256): obj.real had std 0.239 over
+        [-1.14, 1.01] and obj.imag std 0.101, and because both straddle zero
+        with comparable magnitudes, arctan2 wraps right around the circle --
+        the angle came out std 1.74 spanning the full [-pi, pi], which is 96%
+        of the 1.814 you would get from a uniformly random angle. So the
+        preview was essentially pure wrapping noise while the h5 (storing
+        obj_re / obj_im) looked clean. That is the symptom to recognise:
+        beautiful h5, unreadable tiff.
+
+        `code` IS a transmission function -- step0.py writes
+        `code = exp(1j*proj)` -- so np.angle is correct for it.
+        """
         try:
             import tifffile
         except ImportError:
             return
         tifffile.imwrite(os.path.join(self.tiff_dir, f'obj_phase_{i:04}.tiff'),
-                         np.angle(obj).astype('float32'))
+                         obj.real.astype('float32'))
         tifffile.imwrite(os.path.join(self.tiff_dir, f'code_phase_{i:04}.tiff'),
                          np.angle(code).astype('float32'))
 
